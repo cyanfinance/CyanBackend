@@ -406,7 +406,7 @@ router.post('/request-otp', [
 
 // Unified OTP Verification Endpoint
 router.post('/verify-otp', [
-  body('email').isEmail().withMessage('Please include a valid email'),
+  body('identifier').notEmpty().withMessage('Email or phone number is required'),
   body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits')
 ], async (req, res) => {
   try {
@@ -414,30 +414,45 @@ router.post('/verify-otp', [
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    const { email, otp } = req.body;
-    // Find OTP
-    const otpDoc = await Otp.findOne({ email, otp, purpose: 'login', expiresAt: { $gt: new Date() } });
+    const { identifier, otp } = req.body;
+    
+    // Find OTP using the new findValidOTP method
+    const otpDoc = await Otp.findValidOTP(identifier, identifier, otp, 'login');
     if (!otpDoc) {
       return res.status(400).json({ message: 'Invalid or expired OTP' });
     }
-    // Find user (User or Customer)
-    let user = await User.findOne({ email });
-    let role = null;
-    if (user) {
-      role = user.role || 'employee';
-    } else {
-      user = await Customer.findOne({ email });
-      if (user) {
-        role = 'customer';
-      }
+    
+    // Find user by email or phone number
+    let user = await User.findOne({
+      $or: [
+        { email: identifier },
+        { primaryMobile: identifier },
+        { secondaryMobile: identifier }
+      ]
+    });
+    
+    if (!user) {
+      // Try to find customer
+      user = await Customer.findOne({
+        $or: [
+          { email: identifier },
+          { primaryMobile: identifier },
+          { secondaryMobile: identifier }
+        ]
+      });
     }
+    
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
+    
     // Delete OTP after use
     await Otp.deleteOne({ _id: otpDoc._id });
+    
     // Create token
     let token;
+    let role = user.role || (user instanceof Customer ? 'customer' : 'employee');
+    
     if (role === 'customer') {
       const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-key-change-in-production';
       token = jwt.sign(
@@ -448,6 +463,7 @@ router.post('/verify-otp', [
     } else {
       token = user.getSignedJwtToken();
     }
+    
     res.json({
       success: true,
       token,
