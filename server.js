@@ -17,14 +17,31 @@ const app = express();
 const corsOptions = {
     origin: [
         'https://cyan-frontend.vercel.app',
+        'https://cyangold.in',
         'http://localhost:3000',
         'http://localhost:5173'
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token']
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
+    optionsSuccessStatus: 200 // Some legacy browsers (IE11, various SmartTVs) choke on 204
 };
+
+// Enable CORS for all routes
 app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
+app.options('*', cors(corsOptions));
+
+// Debug middleware for CORS
+app.use((req, res, next) => {
+    console.log(`${req.method} ${req.path} - Origin: ${req.headers.origin}`);
+    if (req.method === 'OPTIONS') {
+        console.log('Preflight request detected');
+    }
+    next();
+});
+
 app.use(express.json());
 
 // Health check endpoint
