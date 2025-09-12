@@ -86,6 +86,20 @@ class SMSService {
    */
   async sendOTP(phoneNumber, otp, purpose = 'verification') {
     try {
+      // Skip SMS in development mode to avoid charges, EXCEPT for loan creation
+      const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
+      const isLoanCreation = purpose === 'loan_creation' || purpose === 'customer_registration';
+      
+      if (isDevelopment && !isLoanCreation) {
+        console.log('🚧 Development mode: SMS OTP skipped to avoid charges (except for loan creation)');
+        return {
+          success: false,
+          message: 'SMS disabled in development mode',
+          messageId: 'dev_mode_skip',
+          provider: 'development_mode'
+        };
+      }
+      
       // Check if any SMS provider is configured
       if (!this.apiKey && !this.fast2smsApiKey) {
         throw new Error('SMS service not configured');
@@ -296,7 +310,7 @@ class SMSService {
         }
       }
 
-      // Send SMS
+      // Send SMS (will be automatically skipped in development mode by sendOTP method)
       if (userData.primaryMobile) {
         try {
           const smsResult = await this.sendOTP(userData.primaryMobile, otp, purpose);

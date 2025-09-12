@@ -233,14 +233,35 @@ router.post('/loans', [
             });
         }
 
-        // Generate custom loanId
-        const now = new Date();
-        const year = now.getFullYear() % 1000; // last 3 digits
-        const month = (now.getMonth() + 1).toString().padStart(2, '0');
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-        const loanCount = await Loan.countDocuments({ createdAt: { $gte: monthStart, $lte: monthEnd } }) + 1;
-        const loanId = `CY${year}${month}${loanCount.toString().padStart(2, '0')}`;
+        // Generate unique loanId with retry mechanism
+        let loanId;
+        let attempts = 0;
+        const maxAttempts = 5;
+        
+        do {
+            const now = new Date();
+            const year = now.getFullYear() % 1000; // last 3 digits
+            const month = (now.getMonth() + 1).toString().padStart(2, '0');
+            const day = now.getDate().toString().padStart(2, '0');
+            const hour = now.getHours().toString().padStart(2, '0');
+            const minute = now.getMinutes().toString().padStart(2, '0');
+            const second = now.getSeconds().toString().padStart(2, '0');
+            const random = Math.floor(Math.random() * 100).toString().padStart(2, '0');
+            
+            // Create a more unique ID with timestamp and random component
+            loanId = `CY${year}${month}${day}${hour}${minute}${second}${random}`;
+            
+            // Check if this ID already exists
+            const existingLoan = await Loan.findOne({ loanId });
+            if (!existingLoan) {
+                break; // Unique ID found
+            }
+            
+            attempts++;
+            if (attempts >= maxAttempts) {
+                throw new Error('Unable to generate unique loan ID after multiple attempts');
+            }
+        } while (attempts < maxAttempts);
 
         // Calculate daily interest fields
         const dailyInterestRate = (Number(interestRate) / 100) / 365;

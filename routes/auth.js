@@ -612,12 +612,40 @@ router.post('/send-payment-otp', [
       name: user.name
     };
     
-    const dualChannelResult = await smsService.sendDualChannelOTP(
-      userData,
-      otp,
-      purpose,
-      sendOtpEmail
-    );
+    // In development mode, skip SMS to avoid charges, EXCEPT for loan creation
+    const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
+    const isLoanCreation = purpose === 'loan_creation' || purpose === 'customer_registration';
+    
+    let dualChannelResult;
+    if (isDevelopment && !isLoanCreation) {
+      console.log('🚧 Development mode: Skipping SMS OTP to avoid charges (except for loan creation)');
+      // Only send email OTP in development (except for loan creation)
+      try {
+        const emailResult = await sendOtpEmail(userData.email, otp, purpose);
+        dualChannelResult = {
+          email: emailResult,
+          sms: { success: false, error: 'SMS disabled in development mode' },
+          overall: {
+            success: emailResult.success,
+            message: emailResult.success ? 'OTP sent via email only (SMS disabled in development)' : 'Failed to send OTP'
+          }
+        };
+      } catch (error) {
+        dualChannelResult = {
+          email: { success: false, error: error.message },
+          sms: { success: false, error: 'SMS disabled in development mode' },
+          overall: { success: false, message: 'Failed to send OTP' }
+        };
+      }
+    } else {
+      // Production mode OR loan creation - send both email and SMS
+      dualChannelResult = await smsService.sendDualChannelOTP(
+        userData,
+        otp,
+        purpose,
+        sendOtpEmail
+      );
+    }
     
     // Update OTP record with delivery status
     if (dualChannelResult.email.success) {
@@ -776,12 +804,40 @@ router.post('/send-login-otp', [
       name: user.name
     };
     
-    const dualChannelResult = await smsService.sendDualChannelOTP(
-      userData,
-      otp,
-      'login',
-      sendOtpEmail
-    );
+    // In development mode, skip SMS to avoid charges, EXCEPT for loan creation
+    const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
+    const isLoanCreation = false; // Login is not loan creation
+    
+    let dualChannelResult;
+    if (isDevelopment && !isLoanCreation) {
+      console.log('🚧 Development mode: Skipping SMS OTP to avoid charges (except for loan creation)');
+      // Only send email OTP in development (except for loan creation)
+      try {
+        const emailResult = await sendOtpEmail(userData.email, otp, 'login');
+        dualChannelResult = {
+          email: emailResult,
+          sms: { success: false, error: 'SMS disabled in development mode' },
+          overall: {
+            success: emailResult.success,
+            message: emailResult.success ? 'OTP sent via email only (SMS disabled in development)' : 'Failed to send OTP'
+          }
+        };
+      } catch (error) {
+        dualChannelResult = {
+          email: { success: false, error: error.message },
+          sms: { success: false, error: 'SMS disabled in development mode' },
+          overall: { success: false, message: 'Failed to send OTP' }
+        };
+      }
+    } else {
+      // Production mode OR loan creation - send both email and SMS
+      dualChannelResult = await smsService.sendDualChannelOTP(
+        userData,
+        otp,
+        'login',
+        sendOtpEmail
+      );
+    }
     
     // Update OTP record with delivery status
     if (dualChannelResult.email.success) {

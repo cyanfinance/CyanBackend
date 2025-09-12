@@ -6,7 +6,12 @@ const { calculateMuthootGoldLoanInterest: calcMuthoot } = require('../utils/inte
 const goldItemSchema = new mongoose.Schema({
     description: String,
     grossWeight: Number,
-    netWeight: Number
+    netWeight: Number,
+    // Reference to photos for this gold item
+    photos: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ItemPhoto'
+    }]
 });
 
 const emergencyContactSchema = new mongoose.Schema({
