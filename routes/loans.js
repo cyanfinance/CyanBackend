@@ -26,7 +26,7 @@ router.post('/', [auth, [
     body('amount').isNumeric().withMessage('Amount must be a number'),
     body('purpose').notEmpty().withMessage('Purpose is required'),
     body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months'),
-    body('interestRate').isIn([18, 24, 30]).withMessage('Interest rate must be 18%, 24%, or 30%'),
+    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('customerId').notEmpty().withMessage('customerId is required'),
     body('email').isEmail().withMessage('Valid email is required')
 ]], async (req, res) => {

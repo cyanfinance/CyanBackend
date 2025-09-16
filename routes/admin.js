@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const Otp = require('../models/Otp');
 const { processInterestRateUpgrades, getUpgradeStatistics } = require('../scripts/interestRateUpgradeManager');
 const Notification = require('../models/Notification');
-const { calculateMuthootGoldLoanInterest: calcMuthoot } = require('../utils/interestCalculator');
+const { calculateMuthootGoldLoanInterest: calcMuthoot, calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
 
 // @route   GET /api/admin/check-aadhar/:aadharNumber
 // @desc    Check if an Aadhar number exists and get customer details
@@ -58,7 +58,7 @@ router.post('/loans', [
     body('aadharNumber').matches(/^[0-9]{12}$/).withMessage('Aadhar number must be exactly 12 digits'),
     body('amount').isNumeric().withMessage('Loan amount must be a number').isFloat({ min: 100 }).withMessage('Loan amount must be at least 100'),
     body('term').isIn([3, 6, 12]).withMessage('Duration must be 3, 6, or 12 months'),
-    body('interestRate').isIn([18, 24, 30]).withMessage('Interest rate must be 18%, 24%, or 30%'),
+    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30% or 36%'),
     body('monthlyPayment').isNumeric().withMessage('Monthly payment is required'),
     body('totalPayment').isNumeric().withMessage('Total payment is required'),
     body('goldItems').isArray({ min: 1 }).withMessage('At least one gold item must be provided'),
@@ -830,6 +830,67 @@ router.post('/process-interest-rate-upgrades', [auth, adminAuth], async (req, re
     }
 });
 
+// @route   POST /api/admin/fix-loan-calculation/:loanId
+// @desc    Recalculate and fix loan amounts using correct Muthoot method
+// @access  Private (Admin only)
+router.post('/fix-loan-calculation/:loanId', [auth, adminAuth], async (req, res) => {
+    try {
+        const loan = await Loan.findById(req.params.loanId);
+        
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+        
+        console.log(`🔧 Fixing calculation for loan ${loan.loanId}...`);
+        console.log(`   Current values: Total ₹${loan.totalPayment}, Monthly ₹${loan.monthlyPayment}`);
+        
+        // Calculate correct values using Muthoot method
+        const loanStartDate = loan.createdAt;
+        const loanEndDate = new Date(loanStartDate);
+        loanEndDate.setMonth(loanEndDate.getMonth() + loan.term);
+        
+        const { totalAmount, totalInterest } = calculateMuthootGoldLoanInterest({
+            principal: loan.amount,
+            annualRate: loan.interestRate,
+            disbursementDate: loanStartDate,
+            closureDate: loanEndDate
+        });
+        
+        const correctMonthlyPayment = Math.round(totalAmount / loan.term);
+        
+        // Update the loan with correct values
+        loan.totalPayment = totalAmount;
+        loan.monthlyPayment = correctMonthlyPayment;
+        loan.remainingBalance = Math.max(0, totalAmount - (loan.totalPaid || 0));
+        
+        await loan.save();
+        
+        console.log(`✅ Loan ${loan.loanId} fixed!`);
+        console.log(`   New values: Total ₹${totalAmount}, Monthly ₹${correctMonthlyPayment}`);
+        
+        res.json({
+            success: true,
+            message: 'Loan calculation fixed successfully',
+            data: {
+                loanId: loan.loanId,
+                oldTotalPayment: loan.totalPayment,
+                newTotalPayment: totalAmount,
+                oldMonthlyPayment: loan.monthlyPayment,
+                newMonthlyPayment: correctMonthlyPayment,
+                totalInterest: totalInterest
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error fixing loan calculation:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error fixing loan calculation',
+            error: error.message 
+        });
+    }
+});
+
 // @route   GET /api/admin/interest-rate-upgrade-statistics
 // @desc    Get statistics about loans eligible for interest rate upgrade
 // @access  Private (Admin only)
@@ -854,6 +915,97 @@ router.get('/interest-rate-upgrade-statistics', [auth, adminAuth], async (req, r
             success: false, 
             message: 'Server error while retrieving statistics',
             error: error.message 
+        });
+    }
+});
+
+// @route   POST /api/admin/loans/:loanId/mark-ready-for-auction-36-percent
+// @desc    Mark a loan as ready for auction after reaching 36% interest rate
+// @access  Private (Admin only)
+router.post('/loans/:loanId/mark-ready-for-auction-36-percent', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId } = req.params;
+        const { notes } = req.body;
+        
+        const loan = await Loan.findById(loanId);
+        
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+        
+        const markedBy = {
+            id: req.user.id,
+            name: req.user.name
+        };
+        
+        // Mark loan as ready for auction after 36% upgrade
+        await loan.markReadyForAuctionAfter36Percent(notes || '', markedBy);
+        
+        // Create notification
+        await Notification.createAuctionWarningNotification(loan, {});
+        
+        // Send email notification to customer
+        try {
+            await sendBrevoEmail({
+                to: loan.email,
+                subject: 'URGENT: Final Interest Rate Reached - Loan Ready for Auction',
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #dc2626;">⚠️ URGENT: Final Interest Rate Reached - Loan Ready for Auction</h2>
+                        <p>Dear ${loan.name},</p>
+                        <p>We are writing to inform you that your loan has reached the final interest rate (36%) and is now ready for auction due to non-payment.</p>
+                        
+                        <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                            <h3 style="color: #dc2626; margin-top: 0;">Loan Details:</h3>
+                            <p><strong>Loan ID:</strong> ${loan.loanId}</p>
+                            <p><strong>Current Interest Rate:</strong> 36% (Final Level)</p>
+                            <p><strong>Outstanding Amount:</strong> ₹${loan.remainingBalance.toLocaleString()}</p>
+                            <p><strong>Date Marked for Auction:</strong> ${new Date().toDateString()}</p>
+                        </div>
+                        
+                        <div style="background-color: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                            <p style="margin: 0; color: #92400e;"><strong>⚠️ URGENT ACTION REQUIRED:</strong> Your loan has reached the maximum interest rate (36%) and is now ready for auction. Please pay the full outstanding amount immediately to avoid auction of your gold items.</p>
+                        </div>
+                        
+                        <p>To avoid auction, please:</p>
+                        <ul>
+                            <li>Visit our office immediately with full payment</li>
+                            <li>Contact us at +91-9700049444</li>
+                            <li>Email us at support@cyanfinance.in</li>
+                        </ul>
+                        
+                        <p>If you have any questions, please contact us immediately.</p>
+                        
+                        <p>Best regards,<br/>Cyan Finance Team</p>
+                    </div>
+                `
+            });
+            console.log(`📧 36% auction warning email sent to ${loan.email}`);
+        } catch (emailError) {
+            console.error(`❌ Failed to send 36% auction email to ${loan.email}:`, emailError.message);
+        }
+        
+        // Send SMS notification
+        try {
+            const smsMessage = `URGENT: Loan ${loan.loanId} reached 36% interest rate and marked for auction. Outstanding: ₹${loan.remainingBalance.toLocaleString()}. Pay immediately to avoid auction. Contact: +91-9700049444 - Cyan Finance`;
+            await sendSMS(loan.primaryMobile, smsMessage);
+            console.log(`📱 36% auction warning SMS sent to ${loan.primaryMobile}`);
+        } catch (smsError) {
+            console.error(`❌ Failed to send 36% auction SMS to ${loan.primaryMobile}:`, smsError.message);
+        }
+        
+        res.json({
+            success: true,
+            message: 'Loan marked as ready for auction after reaching 36% interest rate and notifications sent',
+            data: loan.getAuctionSummary()
+        });
+        
+    } catch (error) {
+        console.error('Error marking loan for auction after 36%:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while marking loan for auction after 36%',
+            error: error.message
         });
     }
 });
@@ -1119,6 +1271,52 @@ router.post('/loans/:loanId/mark-auctioned', [auth, adminAuth], async (req, res)
             success: false, 
             message: 'Server error while marking loan as auctioned',
             error: error.message 
+        });
+    }
+});
+
+// @route   GET /api/admin/loans-ready-for-36-percent-auction
+// @desc    Get all loans at 36% interest rate that can be marked for auction
+// @access  Private (Admin only)
+router.get('/loans-ready-for-36-percent-auction', [auth, adminAuth], async (req, res) => {
+    try {
+        const loans = await Loan.find({
+            status: 'active',
+            interestRate: 36,
+            currentUpgradeLevel: 3,
+            auctionStatus: { $in: ['not_ready', 'cancelled'] }
+        }).sort({ createdAt: -1 });
+        
+        const eligibleLoans = loans.map(loan => ({
+            _id: loan._id,
+            loanId: loan.loanId,
+            name: loan.name,
+            email: loan.email,
+            primaryMobile: loan.primaryMobile,
+            amount: loan.amount,
+            interestRate: loan.interestRate,
+            currentUpgradeLevel: loan.currentUpgradeLevel,
+            totalPayment: loan.totalPayment,
+            remainingBalance: loan.remainingBalance,
+            createdAt: loan.createdAt,
+            interestRateUpgradeDate: loan.interestRateUpgradeDate,
+            auctionStatus: loan.auctionStatus,
+            daysSinceUpgrade: loan.interestRateUpgradeDate ? 
+                Math.floor((new Date() - loan.interestRateUpgradeDate) / (1000 * 60 * 60 * 24)) : 0
+        }));
+        
+        res.json({
+            success: true,
+            data: eligibleLoans,
+            count: eligibleLoans.length
+        });
+        
+    } catch (error) {
+        console.error('Error fetching loans ready for 36% auction:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching loans ready for 36% auction',
+            error: error.message
         });
     }
 });

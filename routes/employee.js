@@ -119,7 +119,7 @@ router.post('/loans', [
     body('aadharNumber').matches(/^[0-9]{12}$/).withMessage('Aadhar number must be exactly 12 digits'),
     body('amount').isNumeric().withMessage('Loan amount must be a number').isFloat({ min: 100 }).withMessage('Loan amount must be at least 100'),
     body('term').isIn([3, 6, 12]).withMessage('Duration must be 3, 6, or 12 months'),
-    body('interestRate').isIn([18, 24, 30]).withMessage('Interest rate must be 18%, 24%, or 30%'),
+    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('monthlyPayment').isNumeric().withMessage('Monthly payment is required'),
     body('totalPayment').isNumeric().withMessage('Total payment is required'),
     body('goldItems').isArray({ min: 1 }).withMessage('At least one gold item must be provided'),

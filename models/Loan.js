@@ -657,6 +657,10 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
         // Second upgrade: 24% → 30%
         newRate = 30;
         newUpgradeLevel = 2;
+    } else if (this.currentUpgradeLevel === 2 && this.interestRate === 30) {
+        // Third upgrade: 30% → 36%
+        newRate = 36;
+        newUpgradeLevel = 3;
     } else {
         throw new Error('No further upgrades available for this loan');
     }
@@ -671,11 +675,17 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     const newTermEndDate = new Date(loanStartDate);
     newTermEndDate.setMonth(newTermEndDate.getMonth() + (3 * (newUpgradeLevel + 1))); // 3, 6, or 9 months from start
     
-    // Calculate total interest from original loan date with new rate
+    // Calculate total interest from original loan date with new rate using Muthoot method
+    const { calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
+    const { totalAmount: newTotalPayment, totalInterest: newTotalInterest } = calculateMuthootGoldLoanInterest({
+      principal: this.amount,
+      annualRate: newRate,
+      disbursementDate: loanStartDate,
+      closureDate: newTermEndDate
+    });
+    
     const totalDaysFromStart = Math.floor((newTermEndDate - loanStartDate) / (1000 * 60 * 60 * 24));
     const newDailyRate = (newRate / 100) / 365;
-    const newTotalInterest = this.amount * newDailyRate * totalDaysFromStart;
-    const newTotalPayment = Math.round(this.amount + newTotalInterest);
     
     // Update loan properties
     this.interestRate = newRate;
@@ -692,9 +702,9 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     this.totalPayment = newTotalPayment;
     this.remainingBalance = Math.max(0, newTotalPayment - this.totalPaid);
     
-    // Calculate new monthly payment for remaining period
-    const monthsRemaining = Math.max(1, Math.ceil((newTermEndDate - today) / (1000 * 60 * 60 * 24 * 30)));
-    this.monthlyPayment = Math.round(this.remainingBalance / monthsRemaining);
+    // Calculate new monthly payment for the total term (from original loan date)
+    const totalMonths = Math.ceil(totalDaysFromStart / 30);
+    this.monthlyPayment = Math.round(newTotalPayment / totalMonths);
     
     // Update term to reflect new end date
     this.term = Math.ceil(totalDaysFromStart / 30);
@@ -702,6 +712,7 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     // Create new installment schedule from today to new end date
     this.installments = [];
     let currentDate = new Date(today);
+    const monthsRemaining = Math.max(1, Math.ceil((newTermEndDate - today) / (1000 * 60 * 60 * 24 * 30)));
     
     for (let i = 1; i <= monthsRemaining; i++) {
         currentDate = new Date(currentDate);
@@ -762,6 +773,40 @@ loanSchema.methods.markReadyForAuction = async function(notes = '', markedBy) {
         type: 'auction_warning',
         sentTo: 'customer',
         message: `Loan ${this.loanId} has been marked as ready for auction due to non-payment. Please pay the full amount to avoid auction.`,
+        sentBy: markedBy
+    });
+    
+    await this.save();
+    return this;
+};
+
+// Method to mark loan as ready for auction after reaching 36% interest rate
+loanSchema.methods.markReadyForAuctionAfter36Percent = async function(notes = '', markedBy) {
+    if (this.status === 'closed') {
+        throw new Error('Cannot mark closed loans for auction');
+    }
+    
+    if (this.auctionStatus === 'auctioned') {
+        throw new Error('Loan has already been auctioned');
+    }
+    
+    if (this.interestRate !== 36) {
+        throw new Error('Loan must be at 36% interest rate to mark for auction');
+    }
+    
+    if (this.currentUpgradeLevel !== 3) {
+        throw new Error('Loan must be at final upgrade level (3) to mark for auction');
+    }
+    
+    this.auctionStatus = 'ready_for_auction';
+    this.auctionReadyDate = new Date();
+    this.auctionNotes = notes || 'Marked for auction after reaching final interest rate upgrade (36%)';
+    
+    // Add notification record
+    this.auctionNotifications.push({
+        type: 'auction_warning',
+        sentTo: 'customer',
+        message: `Loan ${this.loanId} has reached the final interest rate (36%) and has been marked as ready for auction. Please pay the full amount immediately to avoid auction of your gold items.`,
         sentBy: markedBy
     });
     

@@ -4,7 +4,7 @@ const { sendBrevoEmail } = require('../utils/brevo');
 const { sendSMS } = require('../utils/smsService');
 
 /**
- * Process overdue loans and upgrade interest rates progressively (18% → 24% → 30%)
+ * Process overdue loans and upgrade interest rates progressively (18% → 24% → 30% → 36%)
  * This function checks for loans that:
  * 1. Have 18% interest rate (original)
  * 2. Are overdue (past their current term duration)
@@ -46,11 +46,26 @@ const processInterestRateUpgrades = async () => {
             }
         }).populate('createdBy', 'name email');
 
-        const overdueLoans = [...firstUpgradeLoans, ...secondUpgradeLoans];
+        // Find loans that need third upgrade (30% → 36%)
+        const thirdUpgradeLoans = await Loan.find({
+            status: 'active',
+            originalInterestRate: 18,
+            currentUpgradeLevel: 2,
+            interestRate: 30,
+            $expr: {
+                $gte: [
+                    { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
+                    270 // 9 months = 270 days
+                ]
+            }
+        }).populate('createdBy', 'name email');
+
+        const overdueLoans = [...firstUpgradeLoans, ...secondUpgradeLoans, ...thirdUpgradeLoans];
 
         console.log(`📊 Found ${overdueLoans.length} loans eligible for interest rate upgrade`);
         console.log(`   - First upgrade candidates (18% → 24%): ${firstUpgradeLoans.length}`);
         console.log(`   - Second upgrade candidates (24% → 30%): ${secondUpgradeLoans.length}`);
+        console.log(`   - Third upgrade candidates (30% → 36%): ${thirdUpgradeLoans.length}`);
         
         // Log details of eligible loans
         if (firstUpgradeLoans.length > 0) {
@@ -101,8 +116,11 @@ const processInterestRateUpgrades = async () => {
                 
                 // Send email notification to customer
                 try {
-                    const upgradeLevelText = upgradeDetails.upgradeLevel === 1 ? 'First' : 'Second';
-                    const nextUpgradeText = upgradeDetails.upgradeLevel === 1 ? 'If not paid within the next 3 months, the interest rate will be upgraded to 30%.' : 'This is the final upgrade level.';
+                    const upgradeLevelText = upgradeDetails.upgradeLevel === 1 ? 'First' : 
+                                           upgradeDetails.upgradeLevel === 2 ? 'Second' : 'Third';
+                    const nextUpgradeText = upgradeDetails.upgradeLevel === 1 ? 'If not paid within the next 3 months, the interest rate will be upgraded to 30%.' : 
+                                          upgradeDetails.upgradeLevel === 2 ? 'If not paid within the next 3 months, the interest rate will be upgraded to 36%.' : 
+                                          'This is the final upgrade level.';
                     
                     await sendBrevoEmail({
                         to: loan.email,
@@ -222,21 +240,38 @@ const getUpgradeStatistics = async () => {
             }
         });
 
-        const allEligibleLoans = [...firstUpgradeEligible, ...secondUpgradeEligible];
+        // Find loans eligible for third upgrade (30% → 36%)
+        const thirdUpgradeEligible = await Loan.find({
+            status: 'active',
+            originalInterestRate: 18,
+            currentUpgradeLevel: 2,
+            interestRate: 30,
+            $expr: {
+                $gte: [
+                    { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
+                    270 // 9 months = 270 days
+                ]
+            }
+        });
+
+        const allEligibleLoans = [...firstUpgradeEligible, ...secondUpgradeEligible, ...thirdUpgradeEligible];
         
         const stats = {
             totalEligible: allEligibleLoans.length,
             firstUpgradeEligible: firstUpgradeEligible.length,
             secondUpgradeEligible: secondUpgradeEligible.length,
+            thirdUpgradeEligible: thirdUpgradeEligible.length,
             byUpgradeLevel: {
                 'level0': firstUpgradeEligible.length, // 18% → 24%
-                'level1': secondUpgradeEligible.length  // 24% → 30%
+                'level1': secondUpgradeEligible.length, // 24% → 30%
+                'level2': thirdUpgradeEligible.length   // 30% → 36%
             },
             totalAmount: 0,
             averageDaysSinceStart: 0,
             upgradeHistory: {
                 '18to24': 0,
-                '24to30': 0
+                '24to30': 0,
+                '30to36': 0
             }
         };
         
