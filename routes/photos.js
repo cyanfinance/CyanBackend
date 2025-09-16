@@ -186,6 +186,31 @@ router.get('/:loanId/photos', auth, async (req, res) => {
     }
 });
 
+// @route   GET /api/loans/:loanId/photos/public
+// @desc    Get all photos for a loan (public endpoint for printing)
+// @access  Public (for print display)
+router.get('/:loanId/photos/public', async (req, res) => {
+    try {
+        const { loanId } = req.params;
+
+        // Verify loan exists
+        const loan = await Loan.findById(loanId);
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+
+        const photos = await ItemPhoto.getPhotosForLoan(loanId);
+
+        res.json({
+            success: true,
+            data: photos
+        });
+    } catch (error) {
+        console.error('Error fetching photos:', error);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 // @route   GET /api/loans/:loanId/photos/:photoId/image
 // @desc    Get full-size image (public endpoint for display)
 // @access  Public (for image display)

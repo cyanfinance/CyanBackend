@@ -25,8 +25,8 @@ const otpWindowMinutes = 10;
 router.post('/', [auth, [
     body('amount').isNumeric().withMessage('Amount must be a number'),
     body('purpose').notEmpty().withMessage('Purpose is required'),
-    body('term').isNumeric().withMessage('Term must be a number'),
-    body('interestRate').isNumeric().withMessage('Interest rate must be a number'),
+    body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months'),
+    body('interestRate').isIn([18, 24, 30]).withMessage('Interest rate must be 18%, 24%, or 30%'),
     body('customerId').notEmpty().withMessage('customerId is required'),
     body('email').isEmail().withMessage('Valid email is required')
 ]], async (req, res) => {
@@ -70,6 +70,7 @@ router.post('/', [auth, [
             purpose,
             term,
             interestRate,
+            originalInterestRate: interestRate, // Add this required field
             loanId,
             dailyInterestRate,
             totalDays,

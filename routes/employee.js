@@ -7,6 +7,7 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 const { sendBrevoEmail } = require('../utils/brevo');
 const Otp = require('../models/Otp');
+const { calculateMuthootGoldLoanInterest: calcMuthoot } = require('../utils/interestCalculator');
 
 // @route   GET /api/employee/check-aadhar/:aadharNumber
 // @desc    Check if an Aadhar number exists and get customer details (employee access)
@@ -117,8 +118,8 @@ router.post('/loans', [
     auth,
     body('aadharNumber').matches(/^[0-9]{12}$/).withMessage('Aadhar number must be exactly 12 digits'),
     body('amount').isNumeric().withMessage('Loan amount must be a number').isFloat({ min: 100 }).withMessage('Loan amount must be at least 100'),
-    body('term').isInt({ min: 1 }).withMessage('Duration must be at least 1 month'),
-    body('interestRate').isFloat({ min: 0 }).withMessage('Interest rate cannot be negative'),
+    body('term').isIn([3, 6, 12]).withMessage('Duration must be 3, 6, or 12 months'),
+    body('interestRate').isIn([18, 24, 30]).withMessage('Interest rate must be 18%, 24%, or 30%'),
     body('monthlyPayment').isNumeric().withMessage('Monthly payment is required'),
     body('totalPayment').isNumeric().withMessage('Total payment is required'),
     body('goldItems').isArray({ min: 1 }).withMessage('At least one gold item must be provided'),
@@ -263,7 +264,19 @@ router.post('/loans', [
             }
         } while (attempts < maxAttempts);
 
-        // Calculate daily interest fields
+        // Calculate using Muthoot method for consistency with frontend
+        const disbursementDate = new Date();
+        const closureDate = new Date(disbursementDate);
+        closureDate.setMonth(closureDate.getMonth() + Number(finalTerm));
+        
+        const muthootResult = calcMuthoot({
+            principal: Number(finalAmount),
+            annualRate: Number(interestRate),
+            disbursementDate: disbursementDate,
+            closureDate: closureDate
+        });
+        
+        // Calculate daily interest fields for tracking
         const dailyInterestRate = (Number(interestRate) / 100) / 365;
         const totalDays = Number(finalTerm) * 30;
         const dailyInterestAmount = Number(finalAmount) * dailyInterestRate;
@@ -281,14 +294,15 @@ router.post('/loans', [
             emergencyContact: customer.emergencyContact,
             goldItems,
             interestRate: Number(interestRate),
+            originalInterestRate: Number(interestRate), // Add this required field
             amount: Number(finalAmount),
             term: Number(finalTerm),
-            monthlyPayment: Number(monthlyPayment),
-            totalPayment: Number(totalPayment),
+            monthlyPayment: Math.round(muthootResult.totalAmount / Number(finalTerm)),
+            totalPayment: muthootResult.totalAmount,
             status: 'active',
             createdBy: req.user._id,
             loanId,
-            remainingBalance: Number(finalAmount),
+            remainingBalance: muthootResult.totalAmount,
             totalPaid: 0,
             payments: [],
             dailyInterestRate,

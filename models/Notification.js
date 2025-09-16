@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const notificationSchema = new mongoose.Schema({
     type: {
         type: String,
-        enum: ['new_loan', 'new_repayment', 'loan_closed', 'payment_due', 'payment_overdue'],
+        enum: ['new_loan', 'new_repayment', 'loan_closed', 'payment_due', 'payment_overdue', 'interest_rate_upgrade', 'auction_warning', 'auction_scheduled', 'auction_final_warning'],
         required: true
     },
     title: {
@@ -132,6 +132,59 @@ notificationSchema.statics.createOverdueNotification = function(loan, daysOverdu
         customerName: loan.name,
         customerMobile: loan.primaryMobile,
         amount: loan.monthlyPayment
+    });
+};
+
+// Static method to create interest rate upgrade notification
+notificationSchema.statics.createInterestRateUpgradeNotification = function(loan, oldRate, newRate, upgradeDetails) {
+    const upgradeLevelText = upgradeDetails.upgradeLevel === 1 ? 'First' : 'Second';
+    return this.create({
+        type: 'interest_rate_upgrade',
+        title: `${upgradeLevelText} Interest Rate Upgrade`,
+        message: `Interest rate for ${loan.name}'s loan has been upgraded from ${oldRate}% to ${newRate}% due to overdue payment. New total amount: ₹${upgradeDetails.newTotalPayment.toLocaleString()}. New term end: ${upgradeDetails.newTermEndDate.toDateString()}`,
+        loanId: loan._id,
+        customerName: loan.name,
+        customerMobile: loan.primaryMobile,
+        amount: upgradeDetails.newTotalPayment
+    });
+};
+
+// Static method to create auction warning notification
+notificationSchema.statics.createAuctionWarningNotification = function(loan, auctionDetails) {
+    return this.create({
+        type: 'auction_warning',
+        title: 'Loan Ready for Auction - Urgent Payment Required',
+        message: `Due to non-payment of loan ${loan.loanId}, we are preparing for auction of your gold items. Please pay the full outstanding amount of ₹${loan.remainingBalance.toLocaleString()} immediately to avoid auction.`,
+        loanId: loan._id,
+        customerName: loan.name,
+        customerMobile: loan.primaryMobile,
+        amount: loan.remainingBalance
+    });
+};
+
+// Static method to create auction scheduled notification
+notificationSchema.statics.createAuctionScheduledNotification = function(loan, auctionDate) {
+    return this.create({
+        type: 'auction_scheduled',
+        title: 'Auction Scheduled - Final Warning',
+        message: `Auction for loan ${loan.loanId} has been scheduled for ${auctionDate.toDateString()}. Please pay the full outstanding amount of ₹${loan.remainingBalance.toLocaleString()} before this date to avoid auction of your gold items.`,
+        loanId: loan._id,
+        customerName: loan.name,
+        customerMobile: loan.primaryMobile,
+        amount: loan.remainingBalance
+    });
+};
+
+// Static method to create auction final warning notification
+notificationSchema.statics.createAuctionFinalWarningNotification = function(loan, auctionDate) {
+    return this.create({
+        type: 'auction_final_warning',
+        title: 'Gold Items Auctioned',
+        message: `Loan ${loan.loanId} has been auctioned on ${auctionDate.toDateString()}. Your gold items have been sold to recover the outstanding amount of ₹${loan.remainingBalance.toLocaleString()}.`,
+        loanId: loan._id,
+        customerName: loan.name,
+        customerMobile: loan.primaryMobile,
+        amount: loan.remainingBalance
     });
 };
 

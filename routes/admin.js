@@ -7,8 +7,12 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
 const { sendBrevoEmail } = require('../utils/brevo');
+const { sendSMS } = require('../utils/smsService');
 const crypto = require('crypto');
 const Otp = require('../models/Otp');
+const { processInterestRateUpgrades, getUpgradeStatistics } = require('../scripts/interestRateUpgradeManager');
+const Notification = require('../models/Notification');
+const { calculateMuthootGoldLoanInterest: calcMuthoot } = require('../utils/interestCalculator');
 
 // @route   GET /api/admin/check-aadhar/:aadharNumber
 // @desc    Check if an Aadhar number exists and get customer details
@@ -53,8 +57,8 @@ router.post('/loans', [
     adminAuth,
     body('aadharNumber').matches(/^[0-9]{12}$/).withMessage('Aadhar number must be exactly 12 digits'),
     body('amount').isNumeric().withMessage('Loan amount must be a number').isFloat({ min: 100 }).withMessage('Loan amount must be at least 100'),
-    body('term').isInt({ min: 1 }).withMessage('Duration must be at least 1 month'),
-    body('interestRate').isFloat({ min: 0 }).withMessage('Interest rate cannot be negative'),
+    body('term').isIn([3, 6, 12]).withMessage('Duration must be 3, 6, or 12 months'),
+    body('interestRate').isIn([18, 24, 30]).withMessage('Interest rate must be 18%, 24%, or 30%'),
     body('monthlyPayment').isNumeric().withMessage('Monthly payment is required'),
     body('totalPayment').isNumeric().withMessage('Total payment is required'),
     body('goldItems').isArray({ min: 1 }).withMessage('At least one gold item must be provided'),
@@ -197,7 +201,19 @@ router.post('/loans', [
             }
         } while (attempts < maxAttempts);
 
-        // Calculate daily interest fields
+        // Calculate using Muthoot method for consistency with frontend
+        const disbursementDate = new Date();
+        const closureDate = new Date(disbursementDate);
+        closureDate.setMonth(closureDate.getMonth() + Number(finalTerm));
+        
+        const muthootResult = calcMuthoot({
+            principal: Number(finalAmount),
+            annualRate: Number(interestRate),
+            disbursementDate: disbursementDate,
+            closureDate: closureDate
+        });
+        
+        // Calculate daily interest fields for tracking
         const dailyInterestRate = (Number(interestRate) / 100) / 365;
         const totalDays = Number(finalTerm) * 30;
         const dailyInterestAmount = Number(finalAmount) * dailyInterestRate;
@@ -215,14 +231,15 @@ router.post('/loans', [
             emergencyContact: customer.emergencyContact,
             goldItems,
             interestRate: Number(interestRate),
+            originalInterestRate: Number(interestRate), // Add this required field
             amount: Number(finalAmount),
             term: Number(finalTerm),
-            monthlyPayment: Number(monthlyPayment),
-            totalPayment: Number(finalAmount),
+            monthlyPayment: Math.round(muthootResult.totalAmount / Number(finalTerm)),
+            totalPayment: muthootResult.totalAmount,
             status: 'active',
             createdBy: req.user._id,
             loanId,
-            remainingBalance: Number(finalAmount),
+            remainingBalance: muthootResult.totalAmount,
             totalPaid: 0,
             payments: [],
             dailyInterestRate,
@@ -778,6 +795,357 @@ router.post('/verify-customer-otp', [auth, adminAuth], async (req, res) => {
     } catch (err) {
         console.error('Error verifying OTP:', err);
         res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// @route   POST /api/admin/process-interest-rate-upgrades
+// @desc    Manually trigger interest rate upgrade process
+// @access  Private (Admin only)
+router.post('/process-interest-rate-upgrades', [auth, adminAuth], async (req, res) => {
+    try {
+        console.log('🔄 Manual interest rate upgrade process triggered by admin:', req.user.email);
+        
+        const result = await processInterestRateUpgrades();
+        
+        if (result.success) {
+            res.json({
+                success: true,
+                message: 'Interest rate upgrade process completed successfully',
+                data: result
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                message: 'Interest rate upgrade process failed',
+                error: result.error
+            });
+        }
+    } catch (error) {
+        console.error('Error in manual interest rate upgrade:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error during interest rate upgrade process',
+            error: error.message 
+        });
+    }
+});
+
+// @route   GET /api/admin/interest-rate-upgrade-statistics
+// @desc    Get statistics about loans eligible for interest rate upgrade
+// @access  Private (Admin only)
+router.get('/interest-rate-upgrade-statistics', [auth, adminAuth], async (req, res) => {
+    try {
+        const stats = await getUpgradeStatistics();
+        
+        if (stats) {
+            res.json({
+                success: true,
+                data: stats
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                message: 'Failed to retrieve upgrade statistics'
+            });
+        }
+    } catch (error) {
+        console.error('Error getting upgrade statistics:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error while retrieving statistics',
+            error: error.message 
+        });
+    }
+});
+
+// @route   POST /api/admin/loans/:loanId/mark-ready-for-auction
+// @desc    Mark a loan as ready for auction
+// @access  Private (Admin only)
+router.post('/loans/:loanId/mark-ready-for-auction', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId } = req.params;
+        const { notes } = req.body;
+        
+        const loan = await Loan.findById(loanId);
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+        
+        const markedBy = {
+            id: req.user.id,
+            name: req.user.name
+        };
+        
+        // Mark loan as ready for auction
+        await loan.markReadyForAuction(notes || '', markedBy);
+        
+        // Create system notification
+        await Notification.createAuctionWarningNotification(loan, {});
+        
+        // Send email notification to customer
+        try {
+            await sendBrevoEmail({
+                to: loan.email,
+                subject: 'URGENT: Loan Ready for Auction - Immediate Payment Required',
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #dc2626;">⚠️ URGENT: Loan Ready for Auction</h2>
+                        <p>Dear ${loan.name},</p>
+                        <p>We are writing to inform you that due to non-payment of your loan, we are preparing for auction of your gold items.</p>
+                        
+                        <div style="background-color: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+                            <h3 style="color: #dc2626; margin-top: 0;">Loan Details:</h3>
+                            <p><strong>Loan ID:</strong> ${loan.loanId}</p>
+                            <p><strong>Outstanding Amount:</strong> ₹${loan.remainingBalance.toLocaleString()}</p>
+                            <p><strong>Total Gold Weight:</strong> ${loan.goldItems ? loan.goldItems.reduce((total, item) => total + (item.netWeight || 0), 0) : 0} grams</p>
+                            <p><strong>Date Marked for Auction:</strong> ${new Date().toDateString()}</p>
+                        </div>
+                        
+                        <div style="background-color: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                            <p style="margin: 0; color: #92400e;"><strong>⚠️ URGENT ACTION REQUIRED:</strong> Please pay the full outstanding amount immediately to avoid auction of your gold items.</p>
+                        </div>
+                        
+                        <p>To avoid auction, please:</p>
+                        <ul>
+                            <li>Visit our office immediately</li>
+                            <li>Pay the full outstanding amount</li>
+                            <li>Contact us to discuss payment options</li>
+                        </ul>
+                        
+                        <p>If you have any questions or need to discuss payment arrangements, please contact us immediately:</p>
+                        <ul>
+                            <li>Phone: +91-9700049444</li>
+                            <li>Email: support@cyanfinance.in</li>
+                        </ul>
+                        
+                        <p>Best regards,<br/>Cyan Finance Team</p>
+                    </div>
+                `
+            });
+            console.log(`📧 Auction warning email sent to ${loan.email}`);
+        } catch (emailError) {
+            console.error(`❌ Failed to send auction email to ${loan.email}:`, emailError.message);
+        }
+        
+        // Send SMS notification
+        try {
+            const smsMessage = `URGENT: Loan ${loan.loanId} marked for auction due to non-payment. Outstanding: ₹${loan.remainingBalance.toLocaleString()}. Pay immediately to avoid auction. Contact: +91-9700049444 - Cyan Finance`;
+            await sendSMS(loan.primaryMobile, smsMessage);
+            console.log(`📱 Auction warning SMS sent to ${loan.primaryMobile}`);
+        } catch (smsError) {
+            console.error(`❌ Failed to send auction SMS to ${loan.primaryMobile}:`, smsError.message);
+        }
+        
+        res.json({
+            success: true,
+            message: 'Loan marked as ready for auction and notifications sent',
+            data: loan.getAuctionSummary()
+        });
+        
+    } catch (error) {
+        console.error('Error marking loan for auction:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error while marking loan for auction',
+            error: error.message 
+        });
+    }
+});
+
+// @route   POST /api/admin/loans/:loanId/schedule-auction
+// @desc    Schedule auction for a loan
+// @access  Private (Admin only)
+router.post('/loans/:loanId/schedule-auction', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId } = req.params;
+        const { auctionDate, notes } = req.body;
+        
+        if (!auctionDate) {
+            return res.status(400).json({ message: 'Auction date is required' });
+        }
+        
+        const loan = await Loan.findById(loanId);
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+        
+        const scheduledBy = {
+            id: req.user.id,
+            name: req.user.name
+        };
+        
+        const auctionDateObj = new Date(auctionDate);
+        
+        // Schedule auction
+        await loan.scheduleAuction(auctionDateObj, notes || '', scheduledBy);
+        
+        // Create system notification
+        await Notification.createAuctionScheduledNotification(loan, auctionDateObj);
+        
+        // Send email notification to customer
+        try {
+            await sendBrevoEmail({
+                to: loan.email,
+                subject: 'Auction Scheduled - Final Warning',
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #dc2626;">🚨 Auction Scheduled - Final Warning</h2>
+                        <p>Dear ${loan.name},</p>
+                        <p>We are writing to inform you that an auction has been scheduled for your loan due to non-payment.</p>
+                        
+                        <div style="background-color: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+                            <h3 style="color: #dc2626; margin-top: 0;">Auction Details:</h3>
+                            <p><strong>Loan ID:</strong> ${loan.loanId}</p>
+                            <p><strong>Auction Date:</strong> ${auctionDateObj.toDateString()}</p>
+                            <p><strong>Outstanding Amount:</strong> ₹${loan.remainingBalance.toLocaleString()}</p>
+                            <p><strong>Total Gold Weight:</strong> ${loan.goldItems ? loan.goldItems.reduce((total, item) => total + (item.netWeight || 0), 0) : 0} grams</p>
+                        </div>
+                        
+                        <div style="background-color: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                            <p style="margin: 0; color: #92400e;"><strong>🚨 FINAL WARNING:</strong> Please pay the full outstanding amount before ${auctionDateObj.toDateString()} to avoid auction of your gold items.</p>
+                        </div>
+                        
+                        <p>To avoid auction, please:</p>
+                        <ul>
+                            <li>Visit our office before the auction date</li>
+                            <li>Pay the full outstanding amount</li>
+                            <li>Contact us immediately to discuss payment options</li>
+                        </ul>
+                        
+                        <p>If you have any questions, please contact us immediately:</p>
+                        <ul>
+                            <li>Phone: +91-9700049444</li>
+                            <li>Email: support@cyanfinance.in</li>
+                        </ul>
+                        
+                        <p>Best regards,<br/>Cyan Finance Team</p>
+                    </div>
+                `
+            });
+            console.log(`📧 Auction scheduled email sent to ${loan.email}`);
+        } catch (emailError) {
+            console.error(`❌ Failed to send auction scheduled email to ${loan.email}:`, emailError.message);
+        }
+        
+        res.json({
+            success: true,
+            message: 'Auction scheduled and notifications sent',
+            data: loan.getAuctionSummary()
+        });
+        
+    } catch (error) {
+        console.error('Error scheduling auction:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error while scheduling auction',
+            error: error.message 
+        });
+    }
+});
+
+// @route   POST /api/admin/loans/:loanId/mark-auctioned
+// @desc    Mark a loan as auctioned
+// @access  Private (Admin only)
+router.post('/loans/:loanId/mark-auctioned', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId } = req.params;
+        const { auctionDate, notes } = req.body;
+        
+        const loan = await Loan.findById(loanId);
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+        
+        const auctionedBy = {
+            id: req.user.id,
+            name: req.user.name
+        };
+        
+        const auctionDateObj = auctionDate ? new Date(auctionDate) : new Date();
+        
+        // Mark loan as auctioned
+        await loan.markAsAuctioned(auctionDateObj, notes || '', auctionedBy);
+        
+        // Create system notification
+        await Notification.createAuctionFinalWarningNotification(loan, auctionDateObj);
+        
+        // Send email notification to customer
+        try {
+            await sendBrevoEmail({
+                to: loan.email,
+                subject: 'Gold Items Auctioned - Loan Closed',
+                html: `
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #dc2626;">Gold Items Auctioned</h2>
+                        <p>Dear ${loan.name},</p>
+                        <p>We are writing to inform you that your loan has been auctioned due to non-payment.</p>
+                        
+                        <div style="background-color: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
+                            <h3 style="color: #dc2626; margin-top: 0;">Auction Details:</h3>
+                            <p><strong>Loan ID:</strong> ${loan.loanId}</p>
+                            <p><strong>Auction Date:</strong> ${auctionDateObj.toDateString()}</p>
+                            <p><strong>Outstanding Amount:</strong> ₹${loan.remainingBalance.toLocaleString()}</p>
+                            <p><strong>Total Gold Weight:</strong> ${loan.goldItems ? loan.goldItems.reduce((total, item) => total + (item.netWeight || 0), 0) : 0} grams</p>
+                        </div>
+                        
+                        <div style="background-color: #f3f4f6; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                            <p style="margin: 0; color: #374151;">Your gold items have been sold to recover the outstanding loan amount. The loan has been closed.</p>
+                        </div>
+                        
+                        <p>If you have any questions, please contact us:</p>
+                        <ul>
+                            <li>Phone: +91-9700049444</li>
+                            <li>Email: support@cyanfinance.in</li>
+                        </ul>
+                        
+                        <p>Best regards,<br/>Cyan Finance Team</p>
+                    </div>
+                `
+            });
+            console.log(`📧 Auction completed email sent to ${loan.email}`);
+        } catch (emailError) {
+            console.error(`❌ Failed to send auction completed email to ${loan.email}:`, emailError.message);
+        }
+        
+        res.json({
+            success: true,
+            message: 'Loan marked as auctioned and notifications sent',
+            data: loan.getAuctionSummary()
+        });
+        
+    } catch (error) {
+        console.error('Error marking loan as auctioned:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error while marking loan as auctioned',
+            error: error.message 
+        });
+    }
+});
+
+// @route   GET /api/admin/auction-loans
+// @desc    Get all loans ready for auction or scheduled for auction
+// @access  Private (Admin only)
+router.get('/auction-loans', [auth, adminAuth], async (req, res) => {
+    try {
+        const loans = await Loan.find({
+            auctionStatus: { $in: ['ready_for_auction', 'auction_scheduled'] }
+        }).sort({ auctionReadyDate: -1 });
+        
+        const auctionLoans = loans.map(loan => loan.getAuctionSummary());
+        
+        res.json({
+            success: true,
+            data: auctionLoans
+        });
+        
+    } catch (error) {
+        console.error('Error fetching auction loans:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Server error while fetching auction loans',
+            error: error.message 
+        });
     }
 });
 

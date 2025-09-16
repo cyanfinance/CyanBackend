@@ -240,7 +240,77 @@ const loanSchema = new mongoose.Schema({
     goldReturnedBy: {
         id: { type: String },
         name: { type: String }
-    }
+    },
+    // Interest rate upgrade tracking
+    originalInterestRate: {
+        type: Number,
+        required: true
+    },
+    interestRateUpgraded: {
+        type: Boolean,
+        default: false
+    },
+    interestRateUpgradeDate: {
+        type: Date
+    },
+    interestRateUpgradeReason: {
+        type: String,
+        enum: ['overdue_upgrade', 'manual_upgrade'],
+        default: 'overdue_upgrade'
+    },
+    // Progressive upgrade tracking
+    upgradeHistory: [{
+        fromRate: Number,
+        toRate: Number,
+        upgradeDate: Date,
+        reason: String,
+        newTermEndDate: Date,
+        calculatedFromOriginalDate: Boolean
+    }],
+    currentUpgradeLevel: {
+        type: Number,
+        default: 0 // 0 = original, 1 = first upgrade (18%→24%), 2 = second upgrade (24%→30%)
+    },
+    // Auction management
+    auctionStatus: {
+        type: String,
+        enum: ['not_ready', 'ready_for_auction', 'auction_scheduled', 'auctioned', 'cancelled'],
+        default: 'not_ready'
+    },
+    auctionReadyDate: {
+        type: Date
+    },
+    auctionScheduledDate: {
+        type: Date
+    },
+    auctionDate: {
+        type: Date
+    },
+    auctionNotes: {
+        type: String,
+        trim: true
+    },
+    auctionNotifications: [{
+        sentDate: {
+            type: Date,
+            default: Date.now
+        },
+        type: {
+            type: String,
+            enum: ['auction_warning', 'auction_scheduled', 'final_warning'],
+            required: true
+        },
+        sentTo: {
+            type: String,
+            enum: ['customer', 'admin', 'both'],
+            required: true
+        },
+        message: String,
+        sentBy: {
+            id: { type: String },
+            name: { type: String }
+        }
+    }]
 });
 
 // Add index explicitly
@@ -249,22 +319,32 @@ loanSchema.index({ aadharNumber: 1 }, { unique: false });
 // Calculate daily interest payment and set up installments before saving
 loanSchema.pre('save', function(next) {
     if (this.isNew) {
-        // Convert yearly interest rate to daily
-        const dailyRate = (this.interestRate / 100) / 365; // Daily interest rate from yearly
-        const totalDays = this.term * 30; // Approximate days (30 days per month)
-        const p = this.amount; // Principal amount
+        // Store original interest rate
+        this.originalInterestRate = this.interestRate;
         
-        // Calculate daily interest amount
+        // Use Muthoot calculation method for consistency with frontend
+        const disbursementDate = this.createdAt || new Date();
+        const closureDate = new Date(disbursementDate);
+        closureDate.setMonth(closureDate.getMonth() + this.term);
+        
+        const muthootResult = calcMuthoot({
+            principal: this.amount,
+            annualRate: this.interestRate,
+            disbursementDate: disbursementDate,
+            closureDate: closureDate
+        });
+        
+        // Calculate daily interest amount for tracking
+        const dailyRate = (this.interestRate / 100) / 365;
+        const totalDays = this.term * 30; // Approximate days (30 days per month)
+        
         this.dailyInterestRate = dailyRate;
         this.totalDays = totalDays;
-        this.dailyInterestAmount = p * dailyRate;
+        this.dailyInterestAmount = this.amount * dailyRate;
         
-        // Calculate total interest for the loan term
-        const totalInterest = p * dailyRate * totalDays;
-        
-        // Calculate monthly payment (principal + interest) / number of months
-        this.monthlyPayment = Math.round((p + totalInterest) / this.term);
-        this.totalPayment = Math.round(p + totalInterest);
+        // Use Muthoot calculation results
+        this.monthlyPayment = Math.round(muthootResult.totalAmount / this.term);
+        this.totalPayment = muthootResult.totalAmount;
         this.remainingBalance = this.totalPayment;
 
         // Create installment schedule
@@ -557,6 +637,225 @@ loanSchema.methods.initializeGoldReturnStatus = async function() {
     
     await this.save();
     return this;
+};
+
+// Method to upgrade interest rate for overdue loans (Progressive System)
+loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrade') {
+    if (this.status === 'closed') {
+        throw new Error('Cannot upgrade interest rate for closed loans');
+    }
+    
+    // Determine the next upgrade level
+    let newRate;
+    let newUpgradeLevel;
+    
+    if (this.currentUpgradeLevel === 0 && this.originalInterestRate === 18) {
+        // First upgrade: 18% → 24%
+        newRate = 24;
+        newUpgradeLevel = 1;
+    } else if (this.currentUpgradeLevel === 1 && this.interestRate === 24) {
+        // Second upgrade: 24% → 30%
+        newRate = 30;
+        newUpgradeLevel = 2;
+    } else {
+        throw new Error('No further upgrades available for this loan');
+    }
+    
+    const oldRate = this.interestRate;
+    const oldTotalPayment = this.totalPayment;
+    const oldRemainingBalance = this.remainingBalance;
+    const today = new Date();
+    const loanStartDate = this.createdAt;
+    
+    // Calculate new term end date (3 months from original loan date for each upgrade)
+    const newTermEndDate = new Date(loanStartDate);
+    newTermEndDate.setMonth(newTermEndDate.getMonth() + (3 * (newUpgradeLevel + 1))); // 3, 6, or 9 months from start
+    
+    // Calculate total interest from original loan date with new rate
+    const totalDaysFromStart = Math.floor((newTermEndDate - loanStartDate) / (1000 * 60 * 60 * 24));
+    const newDailyRate = (newRate / 100) / 365;
+    const newTotalInterest = this.amount * newDailyRate * totalDaysFromStart;
+    const newTotalPayment = Math.round(this.amount + newTotalInterest);
+    
+    // Update loan properties
+    this.interestRate = newRate;
+    this.interestRateUpgraded = true;
+    this.interestRateUpgradeDate = today;
+    this.interestRateUpgradeReason = reason;
+    this.currentUpgradeLevel = newUpgradeLevel;
+    
+    // Update daily interest calculations
+    this.dailyInterestRate = newDailyRate;
+    this.dailyInterestAmount = this.amount * newDailyRate;
+    
+    // Update total payment and remaining balance
+    this.totalPayment = newTotalPayment;
+    this.remainingBalance = Math.max(0, newTotalPayment - this.totalPaid);
+    
+    // Calculate new monthly payment for remaining period
+    const monthsRemaining = Math.max(1, Math.ceil((newTermEndDate - today) / (1000 * 60 * 60 * 24 * 30)));
+    this.monthlyPayment = Math.round(this.remainingBalance / monthsRemaining);
+    
+    // Update term to reflect new end date
+    this.term = Math.ceil(totalDaysFromStart / 30);
+    
+    // Create new installment schedule from today to new end date
+    this.installments = [];
+    let currentDate = new Date(today);
+    
+    for (let i = 1; i <= monthsRemaining; i++) {
+        currentDate = new Date(currentDate);
+        currentDate.setMonth(currentDate.getMonth() + 1);
+        
+        this.installments.push({
+            number: i,
+            dueDate: new Date(currentDate),
+            amount: this.monthlyPayment,
+            status: 'pending',
+            amountPaid: 0
+        });
+    }
+    
+    // Add to upgrade history
+    this.upgradeHistory.push({
+        fromRate: oldRate,
+        toRate: newRate,
+        upgradeDate: today,
+        reason: reason,
+        newTermEndDate: newTermEndDate,
+        calculatedFromOriginalDate: true
+    });
+    
+    await this.save();
+    
+    return {
+        oldRate,
+        newRate,
+        oldTotalPayment,
+        newTotalPayment: this.totalPayment,
+        oldRemainingBalance,
+        newRemainingBalance: this.remainingBalance,
+        upgradeDate: this.interestRateUpgradeDate,
+        newTermEndDate: newTermEndDate,
+        upgradeLevel: newUpgradeLevel,
+        monthsRemaining: monthsRemaining,
+        totalDaysFromStart: totalDaysFromStart
+    };
+};
+
+// Method to mark loan as ready for auction
+loanSchema.methods.markReadyForAuction = async function(notes = '', markedBy) {
+    if (this.status === 'closed') {
+        throw new Error('Cannot mark closed loans for auction');
+    }
+    
+    if (this.auctionStatus === 'auctioned') {
+        throw new Error('Loan has already been auctioned');
+    }
+    
+    this.auctionStatus = 'ready_for_auction';
+    this.auctionReadyDate = new Date();
+    this.auctionNotes = notes;
+    
+    // Add notification record
+    this.auctionNotifications.push({
+        type: 'auction_warning',
+        sentTo: 'customer',
+        message: `Loan ${this.loanId} has been marked as ready for auction due to non-payment. Please pay the full amount to avoid auction.`,
+        sentBy: markedBy
+    });
+    
+    await this.save();
+    return this;
+};
+
+// Method to schedule auction
+loanSchema.methods.scheduleAuction = async function(auctionDate, notes = '', scheduledBy) {
+    if (this.auctionStatus !== 'ready_for_auction') {
+        throw new Error('Loan must be marked as ready for auction before scheduling');
+    }
+    
+    this.auctionStatus = 'auction_scheduled';
+    this.auctionScheduledDate = auctionDate;
+    this.auctionNotes = notes || this.auctionNotes;
+    
+    // Add notification record
+    this.auctionNotifications.push({
+        type: 'auction_scheduled',
+        sentTo: 'customer',
+        message: `Auction for loan ${this.loanId} has been scheduled for ${auctionDate.toDateString()}. Please pay the full amount before this date to avoid auction.`,
+        sentBy: scheduledBy
+    });
+    
+    await this.save();
+    return this;
+};
+
+// Method to mark loan as auctioned
+loanSchema.methods.markAsAuctioned = async function(auctionDate, notes = '', auctionedBy) {
+    if (this.auctionStatus !== 'auction_scheduled' && this.auctionStatus !== 'ready_for_auction') {
+        throw new Error('Loan must be scheduled or ready for auction before marking as auctioned');
+    }
+    
+    this.auctionStatus = 'auctioned';
+    this.auctionDate = auctionDate || new Date();
+    this.auctionNotes = notes || this.auctionNotes;
+    this.status = 'closed';
+    this.closedDate = this.auctionDate;
+    
+    // Add notification record
+    this.auctionNotifications.push({
+        type: 'final_warning',
+        sentTo: 'customer',
+        message: `Loan ${this.loanId} has been auctioned on ${this.auctionDate.toDateString()}. The gold items have been sold to recover the outstanding amount.`,
+        sentBy: auctionedBy
+    });
+    
+    await this.save();
+    return this;
+};
+
+// Method to cancel auction
+loanSchema.methods.cancelAuction = async function(notes = '', cancelledBy) {
+    if (this.auctionStatus === 'auctioned') {
+        throw new Error('Cannot cancel already auctioned loans');
+    }
+    
+    this.auctionStatus = 'cancelled';
+    this.auctionNotes = notes || this.auctionNotes;
+    
+    // Add notification record
+    this.auctionNotifications.push({
+        type: 'auction_warning',
+        sentTo: 'customer',
+        message: `Auction for loan ${this.loanId} has been cancelled. Please continue with regular payments.`,
+        sentBy: cancelledBy
+    });
+    
+    await this.save();
+    return this;
+};
+
+// Method to get auction summary
+loanSchema.methods.getAuctionSummary = function() {
+    const daysSinceReady = this.auctionReadyDate ? 
+        Math.floor((new Date() - this.auctionReadyDate) / (1000 * 60 * 60 * 24)) : 0;
+    
+    return {
+        loanId: this.loanId,
+        customerName: this.name,
+        customerMobile: this.primaryMobile,
+        customerEmail: this.email,
+        auctionStatus: this.auctionStatus,
+        auctionReadyDate: this.auctionReadyDate,
+        auctionScheduledDate: this.auctionScheduledDate,
+        auctionDate: this.auctionDate,
+        daysSinceReady: daysSinceReady,
+        totalGoldWeight: this.goldItems ? this.goldItems.reduce((total, item) => total + (item.netWeight || 0), 0) : 0,
+        outstandingAmount: this.remainingBalance,
+        notificationsSent: this.auctionNotifications ? this.auctionNotifications.length : 0,
+        notes: this.auctionNotes
+    };
 };
 
 module.exports = mongoose.model('Loan', loanSchema); 
