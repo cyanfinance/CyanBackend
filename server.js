@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const { corsOptions, customCors } = require('./middleware/cors');
 const authRoutes = require('./routes/auth');
 const loanRoutes = require('./routes/loans');
 const adminRoutes = require('./routes/admin');
@@ -15,33 +16,14 @@ const photoRoutes = require('./routes/photos');
 const app = express();
 
 // Middleware
-const corsOptions = {
-    origin: [
-        'https://cyan-frontend.vercel.app',
-        'https://cyangold.in',
-        'http://localhost:3000',
-        'http://localhost:5173'
-    ],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token'],
-    optionsSuccessStatus: 200 // Some legacy browsers (IE11, various SmartTVs) choke on 204
-};
-
 // Enable CORS for all routes
 app.use(cors(corsOptions));
 
 // Handle preflight requests explicitly
 app.options('*', cors(corsOptions));
 
-// Debug middleware for CORS
-app.use((req, res, next) => {
-    console.log(`${req.method} ${req.path} - Origin: ${req.headers.origin}`);
-    if (req.method === 'OPTIONS') {
-        console.log('Preflight request detected');
-    }
-    next();
-});
+// Custom CORS middleware for better debugging
+app.use(customCors);
 
 app.use(express.json());
 
