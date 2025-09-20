@@ -245,7 +245,7 @@ router.post('/refresh-token', auth, async (req, res) => {
 
     // Generate new token
     const token = jwt.sign(
-      { id: user.id },
+      { id: user.id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE }
     );

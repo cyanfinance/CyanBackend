@@ -1,3 +1,6 @@
+// Load environment variables first
+require('dotenv').config();
+
 const smsService = require('./smsService');
 const { sendPaymentReminderEmail, sendPaymentUpdateEmail } = require('./brevo');
 
@@ -28,12 +31,21 @@ class PaymentNotificationService {
       // Send email reminder
       if (customerData.email) {
         try {
-          const emailResult = await sendPaymentReminderEmail(
-            customerData.email,
-            customerData.name,
-            paymentData
-          );
-          results.email = emailResult;
+          const emailResult = await sendPaymentReminderEmail({
+            to: customerData.email,
+            name: customerData.name,
+            loanId: paymentData.loanId,
+            amount: paymentData.amount,
+            dueDate: paymentData.dueDate,
+            daysUntilDue: paymentData.daysUntilDue,
+            isOverdue: paymentData.isOverdue,
+            daysOverdue: paymentData.daysOverdue,
+            totalPaid: paymentData.totalPaid,
+            remainingBalance: paymentData.remainingBalance,
+            installmentNumber: paymentData.installmentNumber,
+            totalInstallments: paymentData.totalInstallments
+          });
+          results.email = { success: emailResult };
         } catch (error) {
           results.email.error = error.message;
         }

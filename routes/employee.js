@@ -52,12 +52,26 @@ router.get('/loans', auth, async (req, res) => {
                 { status: { $ne: 'closed' } },
                 { status: 'closed', $or: [ { closedDate: { $exists: false } }, { closedDate: { $gte: oneMonthAgo } } ] }
             ]
-        }).sort({ createdAt: -1 }).populate('createdBy', 'name email role').populate('customerId', 'aadharNumber name');
+        }).sort({ createdAt: -1 }).populate('createdBy', 'name email role').populate('customerId', 'aadharNumber name mobile email');
+        
+        // Add upgrade history information to each loan
+        const loansWithUpgradeInfo = loans.map(loan => {
+            const loanObj = loan.toObject();
+            const hasUpgradeHistory = loan.upgradeHistory && loan.upgradeHistory.length > 0;
+            
+            return {
+                ...loanObj,
+                hasUpgradeHistory,
+                upgradeHistory: hasUpgradeHistory ? loan.upgradeHistory : []
+            };
+        });
+        
         res.json({
             success: true,
-            data: loans
+            data: loansWithUpgradeInfo
         });
     } catch (err) {
+        console.error('Error fetching loans:', err);
         res.status(500).json({ message: 'Server error' });
     }
 });
@@ -487,7 +501,9 @@ router.post('/customers', auth, async (req, res) => {
         
         try {
             const smsService = require('../utils/smsService');
-            const smsResult = await smsService.sendOTP(primaryMobile, otp, 'login');
+            // Use customer_verification template for loan creation, login template for customer registration
+            const templatePurpose = req.body.purpose === 'loan_creation' ? 'customer_verification' : 'login';
+            const smsResult = await smsService.sendOTP(primaryMobile, otp, templatePurpose);
             
             if (!smsResult.success) {
                 console.error('Failed to send SMS OTP:', smsResult.error);
@@ -584,6 +600,115 @@ router.put('/customers/:aadharNumber', auth, async (req, res) => {
     } catch (err) {
         console.error('Error updating customer:', err);
         res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// @route   GET /api/employee/loans/:loanId/upgrade-history
+// @desc    Get upgrade history for a specific loan (employee access)
+router.get('/loans/:loanId/upgrade-history', auth, async (req, res) => {
+    try {
+        const loan = await Loan.findById(req.params.loanId);
+        
+        if (!loan) {
+            return res.status(404).json({
+                success: false,
+                message: 'Loan not found'
+            });
+        }
+        
+        const upgradeHistory = loan.getUpgradeHistory();
+        const timeline = loan.getUpgradeTimeline();
+        
+        res.json({
+            success: true,
+            data: {
+                upgradeHistory,
+                timeline
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching upgrade history:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching upgrade history',
+            error: error.message
+        });
+    }
+});
+
+// @route   GET /api/employee/loans-with-upgrades
+// @desc    Get all loans with upgrade history (employee access)
+router.get('/loans-with-upgrades', auth, async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const status = req.query.status || 'active';
+        
+        const skip = (page - 1) * limit;
+        
+        // Build query
+        const query = {
+            status: status,
+            upgradeHistory: { $exists: true, $ne: [] }
+        };
+        
+        // Find loans with upgrade history
+        const loans = await Loan.find(query)
+            .populate('customerId', 'name email mobile aadharNumber')
+            .populate('createdBy', 'name email role')
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+        
+        // Get total count for pagination
+        const totalLoans = await Loan.countDocuments(query);
+        const totalPages = Math.ceil(totalLoans / limit);
+        
+        // Add upgrade history summary to each loan
+        const loansWithUpgradeInfo = loans.map(loan => {
+            const upgradeHistory = loan.getUpgradeHistory();
+            return {
+                _id: loan._id,
+                loanId: loan.loanId,
+                customerName: loan.customerId?.name || loan.name,
+                customerEmail: loan.customerId?.email || loan.email,
+                customerMobile: loan.customerId?.mobile || loan.primaryMobile,
+                amount: loan.amount,
+                currentInterestRate: loan.interestRate,
+                originalInterestRate: loan.originalInterestRate,
+                currentUpgradeLevel: loan.currentUpgradeLevel,
+                status: loan.status,
+                createdAt: loan.createdAt,
+                createdBy: loan.createdBy,
+                totalUpgrades: upgradeHistory.totalUpgrades,
+                lastUpgradeDate: upgradeHistory.lastUpgradeDate,
+                nextUpgradeInfo: upgradeHistory.nextUpgradeInfo,
+                isAtFinalLevel: upgradeHistory.isAtFinalLevel,
+                highlightReason: `Upgraded ${upgradeHistory.totalUpgrades} time(s) - Current: ${loan.interestRate}%`,
+                upgradeHistory: loan.upgradeHistory
+            };
+        });
+        
+        res.json({
+            success: true,
+            data: {
+                loans: loansWithUpgradeInfo,
+                pagination: {
+                    currentPage: page,
+                    totalPages: totalPages,
+                    totalLoans: totalLoans,
+                    hasNext: page < totalPages,
+                    hasPrev: page > 1
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching loans with upgrades:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching loans with upgrades',
+            error: error.message
+        });
     }
 });
 

@@ -53,8 +53,9 @@ class TemplateManager {
         headerId: process.env.SMS_UPDATE_HEADER_ID,
         fast2smsTemplateId: process.env.FAST2SMS_UPDATE_TEMPLATE_ID,
         fast2smsHeaderId: process.env.FAST2SMS_UPDATE_HEADER_ID,
-        variables: ['customer_name', 'amount', 'status', 'transaction_id'],
-        example: 'Dear {{customer_name}}, your {{company_name}} payment of ₹{{amount}} has been {{status}} successfully. TXN ID: {{transaction_id}}'
+        fast2smsMessageId: process.env.FAST2SMS_UPDATE_MESSAGE_ID,
+        variables: ['amount', 'date'],
+        example: 'Dear Customer, we have received your payment of INR {#VAR#} on {#VAR#} towards your gold loan with Cyan Gold. Thank you, DODDI SURESH'
       },
       loan_creation: {
         name: 'Loan Creation',
@@ -65,6 +66,27 @@ class TemplateManager {
         fast2smsHeaderId: process.env.FAST2SMS_LOAN_HEADER_ID,
         variables: ['customer_name', 'amount', 'loan_id', 'emi_amount'],
         example: 'Dear {{customer_name}}, your {{company_name}} loan of ₹{{amount}} has been created successfully. Loan ID: {{loan_id}}, EMI: ₹{{emi_amount}}'
+      },
+      customer_verification: {
+        name: 'Customer Verification OTP',
+        description: 'OTP for customer verification during loan creation',
+        templateId: process.env.SMS_CUSTOMER_VERIFICATION_TEMPLATE_ID,
+        headerId: process.env.SMS_CUSTOMER_VERIFICATION_HEADER_ID,
+        fast2smsTemplateId: process.env.FAST2SMS_CUSTOMER_VERIFICATION_TEMPLATE_ID,
+        fast2smsHeaderId: process.env.FAST2SMS_CUSTOMER_VERIFICATION_HEADER_ID,
+        variables: ['otp'],
+        example: 'Dear Customer, your verification OTP is {#VAR#}. Please share this OTP only with our authorized Cyan Gold agent. If you did not request this, kindly ignore this message. - Doddi Suresh'
+      },
+      loan_completion: {
+        name: 'Loan Completion Notification',
+        description: 'SMS notification when loan is fully paid',
+        templateId: process.env.SMS_LOAN_COMPLETION_TEMPLATE_ID,
+        headerId: process.env.SMS_LOAN_COMPLETION_HEADER_ID,
+        fast2smsTemplateId: process.env.FAST2SMS_LOAN_COMPLETION_TEMPLATE_ID,
+        fast2smsHeaderId: process.env.FAST2SMS_LOAN_COMPLETION_HEADER_ID,
+        fast2smsMessageId: process.env.FAST2SMS_LOAN_COMPLETION_MESSAGE_ID,
+        variables: [],
+        example: 'Dear Customer, we are pleased to inform you that your loan account with Cyan Gold has been successfully closed. Kindly contact our office at your convenience to schedule the return of your pledged gold. Thank you Team Doddi Suresh'
       }
     };
   }

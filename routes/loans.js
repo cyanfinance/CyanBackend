@@ -7,7 +7,6 @@ const sib = require('sib-api-v3-sdk');
 const defaultClient = sib.ApiClient.instance;
 const apiKey = defaultClient.authentications['api-key'];
 apiKey.apiKey = process.env.BREVO_API_KEY;
-const { generatePaymentReceiptPDF } = require('../utils/pdfGenerator');
 const nodemailer = require('nodemailer');
 const path = require('path');
 const { calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
@@ -198,7 +197,8 @@ router.get('/pending-repayments', auth, adminAuth, async (req, res) => {
           dueDate: nextInst.dueDate,
           amount: nextInst.amount,
           status,
-          daysUnpaid
+          daysUnpaid,
+          loanCreatedDate: loan.createdAt
         });
       }
     }
@@ -312,32 +312,7 @@ router.post('/:id/payment', [auth, [
         await loan.reload && loan.reload(); // for mongoose 7+, otherwise re-query
         const updatedLoan = await Loan.findById(loan._id);
 
-        // Generate PDF receipt
-        let pdfBuffer;
-        try {
-            const logoPath = path.join(__dirname, '../pages/cyanlogo.png');
-            // Dynamically calculate due as of payment date
-            const earlyDue = updatedLoan.calculateEarlyRepaymentAmount(new Date());
-            pdfBuffer = await generatePaymentReceiptPDF({
-                customerName: updatedLoan.name,
-                paymentAmount: amount,
-                totalPaid: updatedLoan.totalPaid,
-                totalLoan: updatedLoan.totalPayment,
-                toBePaid: earlyDue.totalAmount - updatedLoan.totalPaid, // Use dynamic due
-                paymentDate: new Date().toLocaleDateString(),
-                loanId: updatedLoan.loanId,
-                enteredBy: payment.enteredBy,
-                installmentDetails: {
-                    number: payment.installmentNumber,
-                    totalInstallments: updatedLoan.term,
-                    status: updatedLoan.installments[payment.installmentNumber - 1].status
-                },
-                logoPath,
-                forCustomer: true
-            });
-        } catch (pdfErr) {
-            console.error('Failed to generate PDF receipt:', pdfErr);
-        }
+        // Note: PDF receipt generation is now handled on the frontend
 
         // Send repayment email with PDF attachment
         try {
@@ -381,16 +356,28 @@ router.post('/:id/payment', [auth, [
                 from: `Cyan Finance <${process.env.EMAIL_FROM}>`,
                 to: updatedLoan.email,
                 subject: `Payment Confirmation - Loan ${updatedLoan.loanId}`,
-                html: emailContent,
-                attachments: pdfBuffer ? [
-                    {
-                        filename: `PaymentReceipt_${updatedLoan.loanId}_${payment.installmentNumber}.pdf`,
-                        content: pdfBuffer
-                    }
-                ] : []
+                html: emailContent
             });
         } catch (emailErr) {
             console.error('Failed to send repayment email:', emailErr);
+        }
+
+        // Send payment update SMS notification
+        try {
+            if (updatedLoan.primaryMobile) {
+                const paymentData = {
+                    customerName: updatedLoan.name,
+                    amount: amount,
+                    status: 'processed',
+                    transactionId: transactionId,
+                    loanId: updatedLoan.loanId
+                };
+                
+                const smsResult = await smsService.sendPaymentUpdate(updatedLoan.primaryMobile, paymentData);
+                console.log('Payment update SMS result:', smsResult);
+            }
+        } catch (smsErr) {
+            console.error('Failed to send payment update SMS:', smsErr);
         }
 
         // Send response with comprehensive details
@@ -436,42 +423,6 @@ router.get('/customer/:customerId', auth, async (req, res) => {
     }
 });
 
-// Serve a payment receipt PDF for a specific payment
-router.get('/:loanId/payments/:paymentId/receipt', auth, async (req, res) => {
-  try {
-    const loan = await Loan.findById(req.params.loanId);
-    if (!loan) return res.status(404).send('Loan not found');
-    const payment = loan.payments.id(req.params.paymentId);
-    if (!payment) return res.status(404).send('Payment not found');
-
-    // Generate PDF
-    const logoPath = path.join(__dirname, '../pages/cyanlogo.png');
-    // Dynamically calculate due as of payment date
-    const earlyDue = loan.calculateEarlyRepaymentAmount(payment.date);
-    const toBePaid = earlyDue.totalAmount - loan.totalPaid;
-    const pdfBuffer = await generatePaymentReceiptPDF({
-      customerName: loan.name,
-      paymentAmount: payment.amount,
-      totalPaid: loan.totalPaid,
-      totalLoan: loan.totalPayment,
-      toBePaid, // Use dynamic due
-      paymentDate: payment.date.toLocaleDateString(),
-      loanId: loan.loanId,
-      enteredBy: payment.enteredBy,
-      logoPath,
-      forCustomer: false
-    });
-
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename=PaymentReceipt_${loan.loanId}_${payment._id}.pdf`
-    });
-    res.send(pdfBuffer);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Error generating receipt');
-  }
-});
 
 // PATCH /api/loans/:loanId/payments/:paymentId/approve
 router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
@@ -490,32 +441,7 @@ router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
     await loan.reload && loan.reload(); // for mongoose 7+, otherwise re-query
     const updatedLoan = await Loan.findById(loan._id);
 
-    // Generate PDF receipt
-    let pdfBuffer;
-    try {
-      const logoPath = path.join(__dirname, '../pages/cyanlogo.png');
-      // Dynamically calculate due as of payment date
-      const earlyDue = updatedLoan.calculateEarlyRepaymentAmount(new Date());
-      pdfBuffer = await generatePaymentReceiptPDF({
-        customerName: updatedLoan.name,
-        paymentAmount: payment.amount,
-        totalPaid: updatedLoan.totalPaid,
-        totalLoan: updatedLoan.totalPayment,
-        toBePaid: earlyDue.totalAmount - updatedLoan.totalPaid, // Use dynamic due
-        paymentDate: payment.date.toLocaleDateString(),
-        loanId: updatedLoan.loanId,
-        enteredBy: payment.enteredBy,
-        installmentDetails: {
-          number: payment.installmentNumber,
-          totalInstallments: updatedLoan.term,
-          status: updatedLoan.installments[payment.installmentNumber - 1].status
-        },
-        logoPath,
-        forCustomer: true
-      });
-    } catch (pdfErr) {
-      console.error('Failed to generate PDF receipt:', pdfErr);
-    }
+    // Note: PDF receipt generation is now handled on the frontend
 
     // Send repayment email with PDF attachment
     try {
@@ -549,16 +475,28 @@ router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
         from: `Cyan Finance <${process.env.EMAIL_FROM}>`,
         to: updatedLoan.email,
         subject: `Payment Approved - Loan ${updatedLoan.loanId}`,
-        html: emailContent,
-        attachments: pdfBuffer ? [
-          {
-            filename: `PaymentReceipt_${updatedLoan.loanId}_${payment.installmentNumber}.pdf`,
-            content: pdfBuffer
-          }
-        ] : []
+        html: emailContent
       });
     } catch (emailErr) {
       console.error('Failed to send repayment email:', emailErr);
+    }
+
+    // Send payment update SMS notification
+    try {
+      if (updatedLoan.primaryMobile) {
+        const paymentData = {
+          customerName: updatedLoan.name,
+          amount: payment.amount,
+          status: 'approved',
+          transactionId: payment.transactionId,
+          loanId: updatedLoan.loanId
+        };
+        
+        const smsResult = await smsService.sendPaymentUpdate(updatedLoan.primaryMobile, paymentData);
+        console.log('Payment approval SMS result:', smsResult);
+      }
+    } catch (smsErr) {
+      console.error('Failed to send payment approval SMS:', smsErr);
     }
 
     res.json({ success: true, message: 'Payment approved and customer notified.' });
@@ -567,6 +505,8 @@ router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 });
+
+// Note: Payment receipt generation is now handled on the frontend using jsPDF
 
 // Calculate interest as per Muthoot policy
 router.post('/calculate-interest', (req, res) => {
@@ -638,7 +578,7 @@ router.post('/send-otp', auth, async (req, res) => {
       });
     }
     
-    const smsResult = await smsService.sendOTP(customer.primaryMobile, otp, 'login');
+    const smsResult = await smsService.sendOTP(customer.primaryMobile, otp, 'customer_verification');
     
     // Update OTP record with delivery status
     if (smsResult.success) {
@@ -743,6 +683,210 @@ router.get('/weekly-dues', auth, adminAuth, async (req, res) => {
   } catch (err) {
     console.error('Error fetching weekly due installments:', err);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
+// @route   GET /api/loans/debug-auth
+// @desc    Debug endpoint to check authentication
+router.get('/debug-auth', [adminAuth], async (req, res) => {
+  res.json({
+    success: true,
+    message: 'Admin authentication working',
+    user: {
+      id: req.user._id,
+      email: req.user.email,
+      role: req.user.role
+    }
+  });
+});
+
+// @route   DELETE /api/loans/:id
+// @desc    Delete a loan (admin only) - can delete any loan regardless of payments
+router.delete('/:id', [adminAuth], async (req, res) => {
+  try {
+    const loan = await Loan.findById(req.params.id);
+    
+    if (!loan) {
+      return res.status(404).json({ message: 'Loan not found' });
+    }
+
+    // Admin can delete any loan, even with payments
+    // Log the deletion for audit purposes
+    console.log(`Admin ${req.user.email} deleting loan ${loan.loanId} with ${loan.payments?.length || 0} payments`);
+
+    // Delete the loan
+    await Loan.findByIdAndDelete(req.params.id);
+    
+    res.json({ 
+      success: true, 
+      message: 'Loan deleted successfully',
+      deletedLoanId: loan.loanId,
+      hadPayments: loan.payments && loan.payments.length > 0,
+      paymentCount: loan.payments?.length || 0
+    });
+  } catch (err) {
+    console.error('Error deleting loan:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// @route   GET /api/loans/check-upgrades
+// @desc    Check for loans that need interest rate upgrades
+// @access  Admin only
+router.get('/check-upgrades', adminAuth, async (req, res) => {
+  try {
+    const today = new Date();
+    
+    // Find loans that need first upgrade (18% → 24%)
+    const firstUpgradeLoans = await Loan.find({
+      status: 'active',
+      originalInterestRate: 18,
+      currentUpgradeLevel: 0,
+      $expr: {
+        $gte: [
+          { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
+          { $multiply: ['$term', 30] }
+        ]
+      }
+    }).populate('customerId', 'name email mobile').sort({ createdAt: 1 });
+
+    // Find loans that need second upgrade (24% → 30%)
+    const secondUpgradeLoans = await Loan.find({
+      status: 'active',
+      originalInterestRate: 18,
+      currentUpgradeLevel: 1,
+      interestRate: 24,
+      $expr: {
+        $gte: [
+          { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
+          180
+        ]
+      }
+    }).populate('customerId', 'name email mobile').sort({ createdAt: 1 });
+
+    // Find loans that need third upgrade (30% → 36%)
+    const thirdUpgradeLoans = await Loan.find({
+      status: 'active',
+      originalInterestRate: 18,
+      currentUpgradeLevel: 2,
+      interestRate: 30,
+      $expr: {
+        $gte: [
+          { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
+          270
+        ]
+      }
+    }).populate('customerId', 'name email mobile').sort({ createdAt: 1 });
+
+    // Find loans ready for auction (36% rate)
+    const auctionReadyLoans = await Loan.find({
+      status: 'active',
+      originalInterestRate: 18,
+      currentUpgradeLevel: 3,
+      interestRate: 36,
+      $expr: {
+        $gte: [
+          { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
+          360
+        ]
+      }
+    }).populate('customerId', 'name email mobile').sort({ createdAt: 1 });
+
+    const allUpgradeLoans = [...firstUpgradeLoans, ...secondUpgradeLoans, ...thirdUpgradeLoans];
+
+    // Format response
+    const response = {
+      timestamp: today,
+      summary: {
+        firstUpgrade: firstUpgradeLoans.length,
+        secondUpgrade: secondUpgradeLoans.length,
+        thirdUpgrade: thirdUpgradeLoans.length,
+        auctionReady: auctionReadyLoans.length,
+        totalEligible: allUpgradeLoans.length
+      },
+      loans: {
+        firstUpgrade: firstUpgradeLoans.map(loan => ({
+          loanId: loan.loanId,
+          customerName: loan.customerId?.name || 'N/A',
+          customerMobile: loan.customerId?.mobile || 'N/A',
+          amount: loan.amount,
+          currentRate: loan.interestRate,
+          term: loan.term,
+          createdAt: loan.createdAt,
+          daysSinceCreated: Math.floor((new Date() - loan.createdAt) / (1000 * 60 * 60 * 24)),
+          remainingBalance: loan.remainingBalance
+        })),
+        secondUpgrade: secondUpgradeLoans.map(loan => ({
+          loanId: loan.loanId,
+          customerName: loan.customerId?.name || 'N/A',
+          customerMobile: loan.customerId?.mobile || 'N/A',
+          amount: loan.amount,
+          currentRate: loan.interestRate,
+          term: loan.term,
+          createdAt: loan.createdAt,
+          daysSinceCreated: Math.floor((new Date() - loan.createdAt) / (1000 * 60 * 60 * 24)),
+          remainingBalance: loan.remainingBalance
+        })),
+        thirdUpgrade: thirdUpgradeLoans.map(loan => ({
+          loanId: loan.loanId,
+          customerName: loan.customerId?.name || 'N/A',
+          customerMobile: loan.customerId?.mobile || 'N/A',
+          amount: loan.amount,
+          currentRate: loan.interestRate,
+          term: loan.term,
+          createdAt: loan.createdAt,
+          daysSinceCreated: Math.floor((new Date() - loan.createdAt) / (1000 * 60 * 60 * 24)),
+          remainingBalance: loan.remainingBalance
+        })),
+        auctionReady: auctionReadyLoans.map(loan => ({
+          loanId: loan.loanId,
+          customerName: loan.customerId?.name || 'N/A',
+          customerMobile: loan.customerId?.mobile || 'N/A',
+          amount: loan.amount,
+          currentRate: loan.interestRate,
+          term: loan.term,
+          createdAt: loan.createdAt,
+          daysSinceCreated: Math.floor((new Date() - loan.createdAt) / (1000 * 60 * 60 * 24)),
+          remainingBalance: loan.remainingBalance,
+          auctionReady: loan.auctionReady
+        }))
+      }
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ Error checking upgrades:', error);
+    res.status(500).json({ error: 'Failed to check loan upgrades' });
+  }
+});
+
+// @route   GET /api/loans/upgrade-stats
+// @desc    Get upgrade statistics
+// @access  Admin only
+router.get('/upgrade-stats', adminAuth, async (req, res) => {
+  try {
+    const stats = {
+      totalActiveLoans: await Loan.countDocuments({ status: 'active' }),
+      totalClosedLoans: await Loan.countDocuments({ status: 'closed' }),
+      loansByRate: {
+        rate18: await Loan.countDocuments({ status: 'active', interestRate: 18 }),
+        rate24: await Loan.countDocuments({ status: 'active', interestRate: 24 }),
+        rate30: await Loan.countDocuments({ status: 'active', interestRate: 30 }),
+        rate36: await Loan.countDocuments({ status: 'active', interestRate: 36 })
+      },
+      loansWithUpgrades: await Loan.countDocuments({
+        status: 'active',
+        upgradeHistory: { $exists: true, $ne: [] }
+      })
+    };
+
+    res.json(stats);
+
+  } catch (error) {
+    console.error('❌ Error getting upgrade stats:', error);
+    res.status(500).json({ error: 'Failed to get upgrade statistics' });
   }
 });
 

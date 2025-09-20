@@ -97,6 +97,11 @@ const loanSchema = new mongoose.Schema({
     },
     emergencyContact: emergencyContactSchema,
     goldItems: [goldItemSchema],
+    // Reference to photos showing all gold items together
+    allItemsTogetherPhotos: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ItemPhoto'
+    }],
     amount: {
         type: Number,
         required: [true, 'Please provide loan amount'],
@@ -185,6 +190,14 @@ const loanSchema = new mongoose.Schema({
     renewalDate: {
         type: Date
     },
+    bankMobileNumber: {
+        type: String,
+        trim: true
+    },
+    bankLoanAmount: {
+        type: Number,
+        default: 0
+    },
     createdBy: {
         type: mongoose.Schema.ObjectId,
         ref: 'User',
@@ -265,11 +278,28 @@ const loanSchema = new mongoose.Schema({
         upgradeDate: Date,
         reason: String,
         newTermEndDate: Date,
-        calculatedFromOriginalDate: Boolean
+        calculatedFromOriginalDate: Boolean,
+        upgradeLevel: Number, // 1, 2, 3 for first, second, third upgrade
+        daysSinceLoanStart: Number, // Days from original loan date
+        previousTotalPayment: Number, // Total payment before upgrade
+        newTotalPayment: Number, // Total payment after upgrade
+        previousMonthlyPayment: Number, // Monthly payment before upgrade
+        newMonthlyPayment: Number, // Monthly payment after upgrade
+        upgradedBy: {
+            id: { type: String },
+            name: { type: String },
+            type: { type: String, enum: ['admin', 'system', 'employee'] }
+        },
+        notificationSent: {
+            type: Boolean,
+            default: false
+        },
+        nextUpgradeDate: Date, // When next upgrade will happen (if applicable)
+        nextUpgradeRate: Number // What the next rate will be (if applicable)
     }],
     currentUpgradeLevel: {
         type: Number,
-        default: 0 // 0 = original, 1 = first upgrade (18%→24%), 2 = second upgrade (24%→30%)
+        default: 0 // 0 = original, 1 = first upgrade (18%→24%), 2 = second upgrade (24%→30%), 3 = third upgrade (30%→36%)
     },
     // Auction management
     auctionStatus: {
@@ -417,7 +447,8 @@ loanSchema.methods.recordPayment = async function(paymentAmount, paymentMethod, 
         bankName,
         installmentNumber: currentInstallment.number,
         remainingBalance: this.remainingBalance,
-        enteredBy: enteredBy
+        enteredBy: enteredBy,
+        status: paymentMethod === 'handcash' ? 'success' : 'pending' // Auto-approve handcash payments
     };
 
     this.payments.push(payment);
@@ -426,7 +457,9 @@ loanSchema.methods.recordPayment = async function(paymentAmount, paymentMethod, 
     const wasActive = this.status === 'active';
     const roundedPaid = Math.round(this.totalPaid);
     const roundedDue = Math.round(this.totalPayment);
-    if (roundedPaid >= roundedDue || this.remainingBalance <= 0) {
+    // Close loan if fully paid OR if remaining balance is very small (≤ ₹50) and customer has paid principal
+    if (roundedPaid >= roundedDue || this.remainingBalance <= 0 || 
+        (this.remainingBalance <= 50 && this.totalPaid >= this.amount)) {
         this.status = 'closed';
         this.closedDate = today;
         this.actualRepaymentDate = today;
@@ -465,6 +498,22 @@ loanSchema.methods.recordPayment = async function(paymentAmount, paymentMethod, 
         // Create loan closed notification if loan was just closed
         if (wasActive && this.status === 'closed') {
             await Notification.createLoanClosedNotification(this);
+            
+            // Send loan completion SMS
+            try {
+                const smsService = require('../utils/smsService');
+                if (this.primaryMobile) {
+                    const loanData = {
+                        customerName: this.name,
+                        loanId: this.loanId
+                    };
+                    
+                    const smsResult = await smsService.sendLoanCompletion(this.primaryMobile, loanData);
+                    console.log('Loan completion SMS result:', smsResult);
+                }
+            } catch (smsError) {
+                console.error('Failed to send loan completion SMS:', smsError);
+            }
         }
     } catch (error) {
         console.error('Error creating payment notifications:', error);
@@ -668,19 +717,21 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     const oldRate = this.interestRate;
     const oldTotalPayment = this.totalPayment;
     const oldRemainingBalance = this.remainingBalance;
+    const oldMonthlyPayment = this.monthlyPayment;
     const today = new Date();
     const loanStartDate = this.createdAt;
     
-    // Calculate new term end date (3 months from original loan date for each upgrade)
-    const newTermEndDate = new Date(loanStartDate);
-    newTermEndDate.setMonth(newTermEndDate.getMonth() + (3 * (newUpgradeLevel + 1))); // 3, 6, or 9 months from start
+    // Calculate new term end date (3 months from upgrade date)
+    const newTermEndDate = new Date(today);
+    newTermEndDate.setMonth(newTermEndDate.getMonth() + 3); // 3 months from upgrade date
     
-    // Calculate total interest from original loan date with new rate using Muthoot method
+    // Calculate total payment for the remaining 3 months only
+    // Customer needs to pay the full amount (principal + interest) in 3 months
     const { calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
     const { totalAmount: newTotalPayment, totalInterest: newTotalInterest } = calculateMuthootGoldLoanInterest({
       principal: this.amount,
       annualRate: newRate,
-      disbursementDate: loanStartDate,
+      disbursementDate: today, // Start from upgrade date, not original loan date
       closureDate: newTermEndDate
     });
     
@@ -702,17 +753,16 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     this.totalPayment = newTotalPayment;
     this.remainingBalance = Math.max(0, newTotalPayment - this.totalPaid);
     
-    // Calculate new monthly payment for the total term (from original loan date)
-    const totalMonths = Math.ceil(totalDaysFromStart / 30);
-    this.monthlyPayment = Math.round(newTotalPayment / totalMonths);
+    // Calculate new monthly payment for the remaining 3 months
+    const monthsRemaining = 3; // Always 3 months from upgrade date
+    this.monthlyPayment = Math.round(newTotalPayment / monthsRemaining);
     
     // Update term to reflect new end date
     this.term = Math.ceil(totalDaysFromStart / 30);
     
-    // Create new installment schedule from today to new end date
+    // Create new installment schedule from today to new end date (3 months)
     this.installments = [];
     let currentDate = new Date(today);
-    const monthsRemaining = Math.max(1, Math.ceil((newTermEndDate - today) / (1000 * 60 * 60 * 24 * 30)));
     
     for (let i = 1; i <= monthsRemaining; i++) {
         currentDate = new Date(currentDate);
@@ -727,14 +777,44 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
         });
     }
     
-    // Add to upgrade history
+    // Calculate days since loan start
+    const daysSinceLoanStart = Math.floor((today - loanStartDate) / (1000 * 60 * 60 * 24));
+    
+    // Calculate next upgrade information (3 months from this upgrade date)
+    let nextUpgradeDate = null;
+    let nextUpgradeRate = null;
+    if (newUpgradeLevel < 3) {
+        nextUpgradeDate = new Date(today);
+        nextUpgradeDate.setMonth(nextUpgradeDate.getMonth() + 3); // Next upgrade in 3 months
+        if (newUpgradeLevel === 1) {
+            nextUpgradeRate = 30; // 24% → 30%
+        } else if (newUpgradeLevel === 2) {
+            nextUpgradeRate = 36; // 30% → 36%
+        }
+    }
+    
+    // Add to upgrade history with detailed information
     this.upgradeHistory.push({
         fromRate: oldRate,
         toRate: newRate,
         upgradeDate: today,
         reason: reason,
         newTermEndDate: newTermEndDate,
-        calculatedFromOriginalDate: true
+        calculatedFromOriginalDate: false, // Not calculated from original date
+        upgradeLevel: newUpgradeLevel,
+        daysSinceLoanStart: daysSinceLoanStart,
+        previousTotalPayment: oldTotalPayment,
+        newTotalPayment: newTotalPayment,
+        previousMonthlyPayment: oldMonthlyPayment,
+        newMonthlyPayment: Math.round(newTotalPayment / monthsRemaining),
+        upgradedBy: {
+            id: 'system',
+            name: 'System',
+            type: 'system'
+        },
+        notificationSent: false,
+        nextUpgradeDate: nextUpgradeDate,
+        nextUpgradeRate: nextUpgradeRate
     });
     
     await this.save();
@@ -856,6 +936,22 @@ loanSchema.methods.markAsAuctioned = async function(auctionDate, notes = '', auc
         sentBy: auctionedBy
     });
     
+    // Send loan completion SMS for auctioned loans
+    try {
+        const smsService = require('../utils/smsService');
+        if (this.primaryMobile) {
+            const loanData = {
+                customerName: this.name,
+                loanId: this.loanId
+            };
+            
+            const smsResult = await smsService.sendLoanCompletion(this.primaryMobile, loanData);
+            console.log('Auctioned loan completion SMS result:', smsResult);
+        }
+    } catch (smsError) {
+        console.error('Failed to send auctioned loan completion SMS:', smsError);
+    }
+    
     await this.save();
     return this;
 };
@@ -901,6 +997,148 @@ loanSchema.methods.getAuctionSummary = function() {
         notificationsSent: this.auctionNotifications ? this.auctionNotifications.length : 0,
         notes: this.auctionNotes
     };
+};
+
+// Method to get upgrade history summary
+loanSchema.methods.getUpgradeHistory = function() {
+    const today = new Date();
+    const loanStartDate = this.createdAt;
+    const daysSinceLoanStart = Math.floor((today - loanStartDate) / (1000 * 60 * 60 * 24));
+    
+    // Calculate next upgrade information
+    let nextUpgradeInfo = null;
+    if (this.currentUpgradeLevel < 3 && this.originalInterestRate === 18) {
+        const nextUpgradeDate = new Date();
+        
+        // Use 3-month intervals from last upgrade date
+        if (this.upgradeHistory && this.upgradeHistory.length > 0) {
+            // Get the last upgrade date
+            const lastUpgradeDate = this.upgradeHistory[this.upgradeHistory.length - 1].upgradeDate;
+            nextUpgradeDate.setTime(lastUpgradeDate.getTime());
+            nextUpgradeDate.setMonth(nextUpgradeDate.getMonth() + 3); // 3 months from last upgrade
+        } else {
+            // First upgrade: 3 months from loan start
+            nextUpgradeDate.setTime(loanStartDate.getTime());
+            nextUpgradeDate.setDate(nextUpgradeDate.getDate() + (this.term * 30));
+        }
+        
+        let nextRate;
+        if (this.currentUpgradeLevel === 0) {
+            nextRate = 24; // 18% → 24%
+        } else if (this.currentUpgradeLevel === 1) {
+            nextRate = 30; // 24% → 30%
+        } else if (this.currentUpgradeLevel === 2) {
+            nextRate = 36; // 30% → 36%
+        }
+        
+        nextUpgradeInfo = {
+            upgradeDate: nextUpgradeDate,
+            fromRate: this.interestRate,
+            toRate: nextRate,
+            daysRemaining: Math.floor((nextUpgradeDate - today) / (1000 * 60 * 60 * 24)),
+            upgradeLevel: this.currentUpgradeLevel + 1
+        };
+    }
+    
+    return {
+        loanId: this.loanId,
+        customerName: this.name,
+        originalInterestRate: this.originalInterestRate || this.interestRate,
+        currentInterestRate: this.interestRate,
+        currentUpgradeLevel: this.currentUpgradeLevel,
+        daysSinceLoanStart: daysSinceLoanStart,
+        loanStartDate: loanStartDate,
+        upgradeHistory: this.upgradeHistory || [],
+        nextUpgradeInfo: nextUpgradeInfo,
+        isAtFinalLevel: this.currentUpgradeLevel === 3,
+        totalUpgrades: this.upgradeHistory ? this.upgradeHistory.length : 0,
+        lastUpgradeDate: this.upgradeHistory && this.upgradeHistory.length > 0 ? 
+            this.upgradeHistory[this.upgradeHistory.length - 1].upgradeDate : null
+    };
+};
+
+// Method to get upgrade timeline for display
+loanSchema.methods.getUpgradeTimeline = function() {
+    const timeline = [];
+    const loanStartDate = this.createdAt;
+    
+    // Add initial loan entry
+    timeline.push({
+        date: loanStartDate,
+        type: 'loan_created',
+        title: 'Loan Created',
+        description: `Loan created with ${this.originalInterestRate || this.interestRate}% interest rate`,
+        rate: this.originalInterestRate || this.interestRate,
+        level: 0,
+        isUpgrade: false
+    });
+    
+    // Add upgrade entries
+    if (this.upgradeHistory && this.upgradeHistory.length > 0) {
+        this.upgradeHistory.forEach((upgrade, index) => {
+            timeline.push({
+                date: upgrade.upgradeDate,
+                type: 'upgrade',
+                title: `Interest Rate Upgraded`,
+                description: `Upgraded from ${upgrade.fromRate}% to ${upgrade.toRate}% (${upgrade.daysSinceLoanStart || 'N/A'} days after loan start)`,
+                fromRate: upgrade.fromRate,
+                toRate: upgrade.toRate,
+                level: upgrade.upgradeLevel,
+                isUpgrade: true,
+                reason: upgrade.reason,
+                previousTotalPayment: upgrade.previousTotalPayment,
+                newTotalPayment: upgrade.newTotalPayment,
+                previousMonthlyPayment: upgrade.previousMonthlyPayment,
+                newMonthlyPayment: upgrade.newMonthlyPayment,
+                upgradedBy: upgrade.upgradedBy,
+                nextUpgradeDate: upgrade.nextUpgradeDate,
+                nextUpgradeRate: upgrade.nextUpgradeRate
+            });
+        });
+    }
+    
+    // Add future upgrade predictions
+    if (this.currentUpgradeLevel < 3 && this.originalInterestRate === 18) {
+        const nextUpgradeDate = new Date(loanStartDate);
+        
+        // Use day-based calculations to match cron job logic
+        let daysToAdd;
+        if (this.currentUpgradeLevel === 0) {
+            daysToAdd = this.term * 30; // First upgrade: term * 30 days
+        } else if (this.currentUpgradeLevel === 1) {
+            daysToAdd = 180; // Second upgrade: 180 days (6 months)
+        } else if (this.currentUpgradeLevel === 2) {
+            daysToAdd = 270; // Third upgrade: 270 days (9 months)
+        }
+        
+        nextUpgradeDate.setDate(nextUpgradeDate.getDate() + daysToAdd);
+        
+        let nextRate;
+        if (this.currentUpgradeLevel === 0) {
+            nextRate = 24;
+        } else if (this.currentUpgradeLevel === 1) {
+            nextRate = 30;
+        } else if (this.currentUpgradeLevel === 2) {
+            nextRate = 36;
+        }
+        
+        timeline.push({
+            date: nextUpgradeDate,
+            type: 'future_upgrade',
+            title: 'Next Upgrade (Predicted)',
+            description: `Will upgrade to ${nextRate}% if not paid by this date`,
+            fromRate: this.interestRate,
+            toRate: nextRate,
+            level: this.currentUpgradeLevel + 1,
+            isUpgrade: false,
+            isFuture: true
+        });
+    }
+    
+    // Sort timeline by date
+    timeline.sort((a, b) => new Date(a.date) - new Date(b.date));
+    
+    return timeline;
 };
 
 module.exports = mongoose.model('Loan', loanSchema); 

@@ -18,47 +18,53 @@ const processInterestRateUpgrades = async () => {
         const today = new Date();
         
         // Find loans that need first upgrade (18% → 24%)
-        // These are loans that were originally 18% for 3 months and are now past their term
+        // These are loans that were originally 18% and are now past their term duration
         const firstUpgradeLoans = await Loan.find({
             status: 'active',
             originalInterestRate: 18,
             currentUpgradeLevel: 0,
-            term: 3, // Only 3-month loans at 18% should be upgraded
             $expr: {
                 $gte: [
                     { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
-                    90 // 3 months = 90 days
+                    { $multiply: ['$term', 30] } // term in months * 30 days
                 ]
             }
         }).populate('createdBy', 'name email');
 
         // Find loans that need second upgrade (24% → 30%)
+        // NEW LOGIC: Check if 3 months have passed since last upgrade
         const secondUpgradeLoans = await Loan.find({
             status: 'active',
             originalInterestRate: 18,
             currentUpgradeLevel: 1,
             interestRate: 24,
-            $expr: {
-                $gte: [
-                    { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
-                    180 // 6 months = 180 days
-                ]
+            'upgradeHistory.0.upgradeDate': {
+                $lte: new Date(today.getTime() - (90 * 24 * 60 * 60 * 1000)) // 90 days ago
             }
         }).populate('createdBy', 'name email');
 
         // Find loans that need third upgrade (30% → 36%)
+        // NEW LOGIC: Check if 3 months have passed since last upgrade
         const thirdUpgradeLoans = await Loan.find({
             status: 'active',
             originalInterestRate: 18,
             currentUpgradeLevel: 2,
             interestRate: 30,
-            $expr: {
-                $gte: [
-                    { $divide: [{ $subtract: [today, '$createdAt'] }, 1000 * 60 * 60 * 24] },
-                    270 // 9 months = 270 days
-                ]
+            'upgradeHistory.1.upgradeDate': {
+                $lte: new Date(today.getTime() - (90 * 24 * 60 * 60 * 1000)) // 90 days ago
             }
         }).populate('createdBy', 'name email');
+
+        // Find loans ready for auction (36% rate and 3 months passed since last upgrade)
+        const auctionReadyLoans = await Loan.find({
+            status: 'active',
+            originalInterestRate: 18,
+            currentUpgradeLevel: 3,
+            interestRate: 36,
+            'upgradeHistory.2.upgradeDate': {
+                $lte: new Date(today.getTime() - (90 * 24 * 60 * 60 * 1000)) // 90 days ago
+            }
+        }).populate('customerId', 'name email mobile').sort({ createdAt: 1 });
 
         const overdueLoans = [...firstUpgradeLoans, ...secondUpgradeLoans, ...thirdUpgradeLoans];
 
@@ -66,6 +72,7 @@ const processInterestRateUpgrades = async () => {
         console.log(`   - First upgrade candidates (18% → 24%): ${firstUpgradeLoans.length}`);
         console.log(`   - Second upgrade candidates (24% → 30%): ${secondUpgradeLoans.length}`);
         console.log(`   - Third upgrade candidates (30% → 36%): ${thirdUpgradeLoans.length}`);
+        console.log(`   - Auction ready candidates (36% → Auction): ${auctionReadyLoans.length}`);
         
         // Log details of eligible loans
         if (firstUpgradeLoans.length > 0) {
@@ -185,16 +192,39 @@ const processInterestRateUpgrades = async () => {
             }
         }
         
+        // Process auction ready loans
+        let auctionedCount = 0;
+        let auctionErrorCount = 0;
+        
+        for (const loan of auctionReadyLoans) {
+            try {
+                console.log(`🏛️ Processing auction for loan ${loan.loanId}...`);
+                
+                // Mark loan as ready for auction
+                await loan.markAsReadyForAuction('automatic_auction_trigger');
+                
+                console.log(`✅ Loan ${loan.loanId} marked as ready for auction`);
+                auctionedCount++;
+                
+            } catch (error) {
+                console.error(`❌ Error processing auction for loan ${loan.loanId}:`, error.message);
+                auctionErrorCount++;
+            }
+        }
+        
         console.log(`✅ Interest rate upgrade process completed:`);
         console.log(`   📈 Loans upgraded: ${upgradedCount}`);
-        console.log(`   ❌ Errors: ${errorCount}`);
-        console.log(`   📊 Total processed: ${overdueLoans.length}`);
+        console.log(`   🏛️ Loans marked for auction: ${auctionedCount}`);
+        console.log(`   ❌ Upgrade errors: ${errorCount}`);
+        console.log(`   ❌ Auction errors: ${auctionErrorCount}`);
+        console.log(`   📊 Total processed: ${overdueLoans.length + auctionReadyLoans.length}`);
         
         return {
             success: true,
-            totalProcessed: overdueLoans.length,
+            totalProcessed: overdueLoans.length + auctionReadyLoans.length,
             upgradedCount,
-            errorCount
+            auctionedCount,
+            errorCount: errorCount + auctionErrorCount
         };
         
     } catch (error) {

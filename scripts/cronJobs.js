@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { processGoldReturnReminders } = require('./goldReturnManager');
 const { processInterestRateUpgrades } = require('./interestRateUpgradeManager');
+const { sendAllPaymentReminders } = require('./sendPaymentReminders');
 
 // Schedule gold return reminders to run daily at 9:00 AM
 const scheduleGoldReturnReminders = () => {
@@ -74,6 +75,24 @@ const scheduleInterestRateUpgrades = () => {
   console.log('📅 Interest rate upgrades scheduled to run daily at 11:00 AM IST');
 };
 
+// Schedule payment reminders to run daily at 8:00 AM
+const schedulePaymentReminders = () => {
+  cron.schedule('0 8 * * *', async () => {
+    console.log('🕘 Running scheduled payment reminders...');
+    try {
+      await sendAllPaymentReminders();
+      console.log('✅ Scheduled payment reminders completed successfully');
+    } catch (error) {
+      console.error('❌ Error in scheduled payment reminders:', error);
+    }
+  }, {
+    scheduled: true,
+    timezone: "Asia/Kolkata"
+  });
+  
+  console.log('📅 Payment reminders scheduled to run daily at 8:00 AM IST');
+};
+
 // Initialize all cron jobs
 const initializeCronJobs = () => {
   console.log('🚀 Initializing cron jobs...');
@@ -81,6 +100,7 @@ const initializeCronJobs = () => {
   scheduleGoldReturnReminders();
   scheduleAdminNotifications();
   scheduleInterestRateUpgrades();
+  schedulePaymentReminders();
   
   console.log('✅ All cron jobs initialized successfully');
   
@@ -102,7 +122,8 @@ module.exports = {
   initializeCronJobs,
   scheduleGoldReturnReminders,
   scheduleAdminNotifications,
-  scheduleInterestRateUpgrades
+  scheduleInterestRateUpgrades,
+  schedulePaymentReminders
 };
 
 // Run if called directly

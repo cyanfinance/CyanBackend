@@ -1,5 +1,8 @@
 const axios = require('axios');
 
+// Load environment variables
+require('dotenv').config();
+
 /**
  * SMS Service for Cyan Finance
  * Supports multiple SMS providers with DLT compliance
@@ -40,8 +43,8 @@ class SMSService {
       payment_reminder: {
         templateId: process.env.SMS_REMINDER_TEMPLATE_ID,
         headerId: process.env.SMS_REMINDER_HEADER_ID,
-        fast2smsTemplateId: process.env.FAST2SMS_REMINDER_TEMPLATE_ID,
-        fast2smsHeaderId: process.env.FAST2SMS_REMINDER_HEADER_ID
+        fast2smsTemplateId: process.env.FAST2SMS_PAYMENT_REMINDER_ID || '198425', // Default to correct template
+        fast2smsHeaderId: process.env.FAST2SMS_PAYMENT_REMINDER_HEADER_ID || 'DDSURE' // Default to correct header
       },
       payment_update: {
         templateId: process.env.SMS_UPDATE_TEMPLATE_ID,
@@ -54,6 +57,18 @@ class SMSService {
         headerId: process.env.SMS_LOAN_HEADER_ID,
         fast2smsTemplateId: process.env.FAST2SMS_LOAN_TEMPLATE_ID,
         fast2smsHeaderId: process.env.FAST2SMS_LOAN_HEADER_ID
+      },
+      customer_verification: {
+        templateId: process.env.SMS_CUSTOMER_VERIFICATION_TEMPLATE_ID,
+        headerId: process.env.SMS_CUSTOMER_VERIFICATION_HEADER_ID,
+        fast2smsTemplateId: process.env.FAST2SMS_CUSTOMER_VERIFICATION_TEMPLATE_ID,
+        fast2smsHeaderId: process.env.FAST2SMS_CUSTOMER_VERIFICATION_HEADER_ID
+      },
+      loan_completion: {
+        templateId: process.env.SMS_LOAN_COMPLETION_TEMPLATE_ID,
+        headerId: process.env.SMS_LOAN_COMPLETION_HEADER_ID,
+        fast2smsTemplateId: process.env.FAST2SMS_LOAN_COMPLETION_TEMPLATE_ID || '198425', // Default to loan completion template
+        fast2smsHeaderId: process.env.FAST2SMS_LOAN_COMPLETION_HEADER_ID || 'DDSURE' // Default to loan completion header
       },
       // New user/employee registration (first time)
       user_registration: {
@@ -285,6 +300,69 @@ class SMSService {
   }
 
   /**
+   * Send loan completion notification via SMS
+   * @param {string} phoneNumber - Phone number
+   * @param {Object} loanData - Loan completion information
+   * @returns {Promise<Object>} - SMS delivery result
+   */
+  async sendLoanCompletion(phoneNumber, loanData) {
+    try {
+      // Check if any SMS provider is configured
+      if (!this.apiKey && !this.fast2smsApiKey) {
+        throw new Error('SMS service not configured');
+      }
+      
+      // Check if current provider is configured
+      if (this.provider.toLowerCase() === 'fast2sms' && !this.fast2smsApiKey) {
+        throw new Error('Fast2SMS API key not configured');
+      }
+      if (this.provider.toLowerCase() !== 'fast2sms' && !this.apiKey) {
+        throw new Error('SMS API key not configured for current provider');
+      }
+
+      const validatedPhone = this.validatePhoneNumber(phoneNumber);
+      if (!validatedPhone) {
+        throw new Error('Invalid phone number format');
+      }
+
+      const message = this.createLoanCompletionMessage(loanData);
+      
+      let result;
+      switch (this.provider.toLowerCase()) {
+        case 'msg91':
+          result = await this.sendViaMsg91(validatedPhone, message, 'loan_completion');
+          break;
+        case 'twilio':
+          result = await this.sendViaTwilio(validatedPhone, message);
+          break;
+        case 'fast2sms':
+          result = await this.sendViaFast2SMS(validatedPhone, message, 'loan_completion');
+          break;
+        default:
+          throw new Error(`Unsupported SMS provider: ${this.provider}. Supported providers: msg91, twilio, fast2sms`);
+      }
+
+      console.log(`Loan completion SMS sent to ${validatedPhone}:`, result);
+      return {
+        success: true,
+        messageId: result.messageId || result.sid || result.MessageId,
+        provider: this.provider,
+        phoneNumber: validatedPhone,
+        type: 'loan_completion'
+      };
+
+    } catch (error) {
+      console.error('Loan completion SMS failed:', error);
+      return {
+        success: false,
+        error: error.message,
+        phoneNumber,
+        type: 'loan_completion'
+      };
+    }
+  }
+
+  /**
    * Send dual-channel notification (SMS + Email)
    * @param {Object} userData - User information with email and phone
    * @param {string} otp - OTP to send
@@ -427,6 +505,8 @@ class SMSService {
         return `Your ${companyName} payment verification OTP is ${otp}. Valid for 10 minutes. Do not share this OTP with anyone.`;
       case 'password_reset':
         return `Your ${companyName} password reset OTP is ${otp}. Valid for 10 minutes. Do not share this OTP with anyone.`;
+      case 'customer_verification':
+        return `Dear Customer, your verification OTP is ${otp}. Please share this OTP only with our authorized Cyan Gold agent. If you did not request this, kindly ignore this message. - Doddi Suresh`;
       default:
         return `Your ${companyName} verification OTP is ${otp}. Valid for 10 minutes. Do not share this OTP with anyone.`;
     }
@@ -438,11 +518,12 @@ class SMSService {
    * @returns {string} - Formatted message
    */
   createPaymentReminderMessage(paymentData) {
-    const companyName = process.env.COMPANY_NAME || 'Cyan Finance';
+    // For DLT compliance, use the approved template format
+    // Template 198563: "Dear Customer, your payment of Rs {#var#}/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on {#var#}. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh"
     const amount = paymentData.amount || 'your payment';
     const dueDate = paymentData.dueDate || 'the due date';
     
-    return `Dear ${paymentData.customerName || 'Customer'}, your ${companyName} payment of ₹${amount} is due on ${dueDate}. Please make the payment to avoid any late fees.`;
+    return `Dear Customer, your payment of Rs ${amount}/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on ${dueDate}. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh`;
   }
 
   /**
@@ -451,11 +532,19 @@ class SMSService {
    * @returns {string} - Formatted message
    */
   createPaymentUpdateMessage(paymentData) {
-    const companyName = process.env.COMPANY_NAME || 'Cyan Finance';
     const amount = paymentData.amount || 'your payment';
-    const status = paymentData.status || 'processed';
+    const paymentDate = new Date().toLocaleDateString('en-IN');
     
-    return `Dear ${paymentData.customerName || 'Customer'}, your ${companyName} payment of ₹${amount} has been ${status} successfully. Thank you for your business.`;
+    return `Dear Customer, we have received your payment of INR ${amount} on ${paymentDate} towards your gold loan with Cyan Gold. Thank you, DODDI SURESH`;
+  }
+
+  /**
+   * Create loan completion message
+   * @param {Object} loanData - Loan completion information
+   * @returns {string} - Formatted message
+   */
+  createLoanCompletionMessage(loanData) {
+    return `Dear Customer, we are pleased to inform you that your loan account with Cyan Gold has been successfully closed. Kindly contact our office at your convenience to schedule the return of your pledged gold. Thank you Team Doddi Suresh`;
   }
 
   // Provider-specific implementations
@@ -558,11 +647,42 @@ class SMSService {
       // Format phone number for Fast2SMS (remove + and country code if needed)
       const formattedPhone = this.formatPhoneForFast2SMS(phoneNumber);
 
+      // Extract variables from message for DLT template
+      let variablesValue = '';
+      if (purpose === 'customer_verification') {
+        // Extract OTP from message like "Dear Customer, your verification OTP is 123456. Please share..."
+        const otpMatch = message.match(/your verification OTP is (\d+)/);
+        variablesValue = otpMatch ? otpMatch[1] : '';
+      } else if (purpose === 'payment_update') {
+        // Extract amount and date from message like "Dear Customer, we have received your payment of INR 5000 on 15/12/2024 towards your gold loan..."
+        const amountMatch = message.match(/payment of INR (\d+)/);
+        const dateMatch = message.match(/on (\d+\/\d+\/\d+)/);
+        const amount = amountMatch ? amountMatch[1] : '';
+        const date = dateMatch ? dateMatch[1] : '';
+        variablesValue = `${amount}|${date}`; // Fast2SMS uses | as separator for multiple variables
+      } else if (purpose === 'payment_reminder') {
+        // Extract amount and due date from message like "Dear Customer, your payment of Rs 7162/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on 2025-09-23. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh"
+        // Template 198563 has 2 variables: amount and due date
+        const amountMatch = message.match(/payment of Rs (\d+)\/-/);
+        const dateMatch = message.match(/is due on ([^.]+)\./);
+        const amount = amountMatch ? amountMatch[1] : '';
+        const date = dateMatch ? dateMatch[1] : '';
+        variablesValue = `${amount}|${date}`; // Fast2SMS uses | as separator for multiple variables
+      } else if (purpose === 'loan_completion') {
+        // For loan completion, no variables needed as it's a simple notification message
+        // Template 198425 is for loan completion/closing
+        variablesValue = ''; // No variables for loan completion message
+      } else {
+        // For other purposes, extract OTP from message like "Your login OTP is 123456"
+        const otpMatch = message.match(/OTP is (\d+)/);
+        variablesValue = otpMatch ? otpMatch[1] : '';
+      }
+
       // Use DLT route with correct Fast2SMS format (from Excel sheet)
       const payload = new URLSearchParams({
         sender_id: templateConfig.fast2smsHeaderId || this.senderId, // CYANGR
         message: templateConfig.fast2smsTemplateId, // Use template ID as message parameter
-        variables_values: message, // OTP value as variable
+        variables_values: variablesValue, // Variable values (OTP or amount|date)
         route: 'dlt', // DLT route
         numbers: formattedPhone
       });

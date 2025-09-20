@@ -80,7 +80,7 @@ router.post('/:loanId/photos', [
     adminAuth,
     upload.array('photos', 5), // Allow up to 5 photos
     [
-        body('goldItemIndex').isInt({ min: 0 }).withMessage('Valid gold item index is required'),
+        body('goldItemIndex').isInt({ min: -1 }).withMessage('Valid gold item index is required (-1 for all items together)'),
         body('description').optional().isString().withMessage('Description must be a string'),
         body('tags').optional().isArray().withMessage('Tags must be an array')
     ]
@@ -105,8 +105,8 @@ router.post('/:loanId/photos', [
             return res.status(404).json({ message: 'Loan not found' });
         }
 
-        // Verify gold item index is valid
-        if (goldItemIndex >= loan.goldItems.length) {
+        // Verify gold item index is valid (allow -1 for "all items together" photo)
+        if (goldItemIndex !== -1 && goldItemIndex >= loan.goldItems.length) {
             return res.status(400).json({ message: 'Invalid gold item index' });
         }
 
@@ -138,8 +138,14 @@ router.post('/:loanId/photos', [
 
                 await photo.save();
 
-                // Add photo reference to gold item
-                loan.goldItems[goldItemIndex].photos.push(photo._id);
+                // Add photo reference to appropriate location
+                if (goldItemIndex === -1) {
+                    // Add to "all items together" photos
+                    loan.allItemsTogetherPhotos.push(photo._id);
+                } else {
+                    // Add to specific gold item
+                    loan.goldItems[goldItemIndex].photos.push(photo._id);
+                }
                 await loan.save();
 
                 uploadedPhotos.push(photo.getMetadata());

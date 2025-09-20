@@ -359,9 +359,40 @@ router.get('/loans', [auth, adminAuth], async (req, res) => {
             .sort({ createdAt: -1 })
             .populate('createdBy', 'name email role')
             .populate('customerId', 'aadharNumber name');
+        
+        // Process each loan to include accurate payment totals and remaining balance
+        const processedLoans = loans.map(loan => {
+            const loanObj = loan.toObject();
+            
+            // Calculate total paid from payments (include both success and pending payments)
+            const totalPaid = loan.payments ? loan.payments.reduce((sum, payment) => {
+                return sum + payment.amount; // Include all payments regardless of status
+            }, 0) : 0;
+            
+            // Use the loan's remainingBalance if available, otherwise calculate it
+            const remainingBalance = loan.remainingBalance !== undefined ? 
+                loan.remainingBalance : 
+                Math.max(0, (loan.totalPayment || loan.amount) - totalPaid);
+            
+            // Determine loan status based on payments and database status
+            let loanStatus = loan.status;
+            if (remainingBalance <= 0 && totalPaid > 0) {
+                loanStatus = 'closed';
+            } else if (totalPaid > 0 && remainingBalance > 0) {
+                loanStatus = 'active';
+            }
+            
+            return {
+                ...loanObj,
+                totalPaid,
+                remainingBalance,
+                status: loanStatus
+            };
+        });
+        
         res.json({
             success: true,
-            data: loans
+            data: processedLoans
         });
     } catch (err) {
         console.error(err);
@@ -440,7 +471,7 @@ router.get('/customers', [auth, adminAuth], async (req, res) => {
 // @desc    Update a loan as admin
 router.put('/loans/:id', [auth, adminAuth], async (req, res) => {
   try {
-    const { goldItems, depositedBank, renewalDate } = req.body;
+    const { goldItems, depositedBank, renewalDate, bankMobileNumber, bankLoanAmount } = req.body;
 
     // Validate the loan exists
     const loan = await Loan.findById(req.params.id);
@@ -452,6 +483,8 @@ router.put('/loans/:id', [auth, adminAuth], async (req, res) => {
     loan.goldItems = goldItems;
     loan.depositedBank = depositedBank;
     loan.renewalDate = renewalDate;
+    loan.bankMobileNumber = bankMobileNumber;
+    loan.bankLoanAmount = bankLoanAmount;
 
     await loan.save();
 
@@ -730,7 +763,9 @@ router.post('/customers', [
         
         try {
             const smsService = require('../utils/smsService');
-            const smsResult = await smsService.sendOTP(primaryMobile, otp, 'login');
+            // Use customer_verification template for loan creation, login template for customer registration
+            const templatePurpose = req.body.purpose === 'loan_creation' ? 'customer_verification' : 'login';
+            const smsResult = await smsService.sendOTP(primaryMobile, otp, templatePurpose);
             
             if (!smsResult.success) {
                 console.error('Failed to send SMS OTP:', smsResult.error);
@@ -1343,6 +1378,184 @@ router.get('/auction-loans', [auth, adminAuth], async (req, res) => {
             success: false, 
             message: 'Server error while fetching auction loans',
             error: error.message 
+        });
+    }
+});
+
+// @route   GET /api/admin/loans/:loanId/upgrade-history
+// @desc    Get upgrade history for a specific loan
+router.get('/loans/:loanId/upgrade-history', [auth, adminAuth], async (req, res) => {
+    try {
+        const loan = await Loan.findById(req.params.loanId);
+        
+        if (!loan) {
+            return res.status(404).json({
+                success: false,
+                message: 'Loan not found'
+            });
+        }
+        
+        const upgradeHistory = loan.getUpgradeHistory();
+        const timeline = loan.getUpgradeTimeline();
+        
+        res.json({
+            success: true,
+            data: {
+                upgradeHistory,
+                timeline
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching upgrade history:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching upgrade history',
+            error: error.message
+        });
+    }
+});
+
+// @route   GET /api/admin/loans-with-upgrades
+// @desc    Get all loans with upgrade history (highlighted loans)
+router.get('/loans-with-upgrades', [auth, adminAuth], async (req, res) => {
+    try {
+        const { page = 1, limit = 10, status = 'active' } = req.query;
+        const skip = (page - 1) * limit;
+        
+        // Find loans that have been upgraded
+        const loans = await Loan.find({
+            status: status,
+            currentUpgradeLevel: { $gt: 0 }
+        })
+        .populate('createdBy', 'name email')
+        .sort({ interestRateUpgradeDate: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+        
+        // Get total count
+        const total = await Loan.countDocuments({
+            status: status,
+            currentUpgradeLevel: { $gt: 0 }
+        });
+        
+        // Add upgrade history summary to each loan
+        const loansWithHistory = loans.map(loan => {
+            const upgradeHistory = loan.getUpgradeHistory();
+            return {
+                _id: loan._id,
+                loanId: loan.loanId,
+                customerName: loan.name,
+                customerMobile: loan.primaryMobile,
+                customerEmail: loan.email,
+                amount: loan.amount,
+                originalInterestRate: loan.originalInterestRate,
+                currentInterestRate: loan.interestRate,
+                currentUpgradeLevel: loan.currentUpgradeLevel,
+                totalUpgrades: upgradeHistory.totalUpgrades,
+                lastUpgradeDate: upgradeHistory.lastUpgradeDate,
+                nextUpgradeInfo: upgradeHistory.nextUpgradeInfo,
+                isAtFinalLevel: upgradeHistory.isAtFinalLevel,
+                remainingBalance: loan.remainingBalance,
+                status: loan.status,
+                createdAt: loan.createdAt,
+                createdBy: loan.createdBy,
+                // Highlighting information
+                isHighlighted: true,
+                highlightReason: `Upgraded ${upgradeHistory.totalUpgrades} time(s) - Current: ${loan.interestRate}%`,
+                highlightColor: loan.currentUpgradeLevel === 3 ? 'red' : 
+                              loan.currentUpgradeLevel === 2 ? 'orange' : 'yellow'
+            };
+        });
+        
+        res.json({
+            success: true,
+            data: {
+                loans: loansWithHistory,
+                pagination: {
+                    currentPage: parseInt(page),
+                    totalPages: Math.ceil(total / limit),
+                    totalLoans: total,
+                    hasNext: skip + loans.length < total,
+                    hasPrev: page > 1
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching loans with upgrades:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching loans with upgrades',
+            error: error.message
+        });
+    }
+});
+
+// @route   GET /api/admin/upgrade-statistics
+// @desc    Get upgrade statistics and summary
+router.get('/upgrade-statistics', [auth, adminAuth], async (req, res) => {
+    try {
+        const stats = await getUpgradeStatistics();
+        
+        // Get additional upgrade history statistics
+        const upgradeHistoryStats = await Loan.aggregate([
+            {
+                $match: { status: 'active' }
+            },
+            {
+                $group: {
+                    _id: null,
+                    totalLoans: { $sum: 1 },
+                    upgradedLoans: {
+                        $sum: {
+                            $cond: [{ $gt: ['$currentUpgradeLevel', 0] }, 1, 0]
+                        }
+                    },
+                    level1Upgrades: {
+                        $sum: {
+                            $cond: [{ $eq: ['$currentUpgradeLevel', 1] }, 1, 0]
+                        }
+                    },
+                    level2Upgrades: {
+                        $sum: {
+                            $cond: [{ $eq: ['$currentUpgradeLevel', 2] }, 1, 0]
+                        }
+                    },
+                    level3Upgrades: {
+                        $sum: {
+                            $cond: [{ $eq: ['$currentUpgradeLevel', 3] }, 1, 0]
+                        }
+                    },
+                    totalUpgradeHistoryEntries: {
+                        $sum: { $size: { $ifNull: ['$upgradeHistory', []] } }
+                    }
+                }
+            }
+        ]);
+        
+        const historyStats = upgradeHistoryStats[0] || {
+            totalLoans: 0,
+            upgradedLoans: 0,
+            level1Upgrades: 0,
+            level2Upgrades: 0,
+            level3Upgrades: 0,
+            totalUpgradeHistoryEntries: 0
+        };
+        
+        res.json({
+            success: true,
+            data: {
+                ...stats,
+                upgradeHistory: historyStats,
+                upgradeRate: historyStats.totalLoans > 0 ? 
+                    (historyStats.upgradedLoans / historyStats.totalLoans * 100).toFixed(2) : 0
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching upgrade statistics:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while fetching upgrade statistics',
+            error: error.message
         });
     }
 });

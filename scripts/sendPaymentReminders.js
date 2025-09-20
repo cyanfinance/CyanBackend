@@ -1,7 +1,11 @@
+// Load environment variables first
+require('dotenv').config();
+
 const mongoose = require('mongoose');
 const Loan = require('../models/Loan');
+const Customer = require('../models/Customer');
 const { sendPaymentReminderEmail } = require('../utils/brevo');
-require('dotenv').config();
+const paymentNotificationService = require('../utils/paymentNotificationService');
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI, {
@@ -20,7 +24,7 @@ async function sendUpcomingPaymentReminders() {
     const loans = await Loan.find({
       status: 'active',
       'installments.status': { $in: ['pending', 'partial'] }
-    });
+    }).populate('customerId');
     
     console.log(`Found ${loans.length} active loans to check for upcoming payments`);
     
@@ -48,9 +52,15 @@ async function sendUpcomingPaymentReminders() {
         // In production, you might want to add a field to track sent reminders
         
         try {
-          const emailSent = await sendPaymentReminderEmail({
-            to: loan.email,
-            name: loan.name,
+          // Prepare customer data
+          const customerData = {
+            name: loan.customerId?.name || loan.name || 'Customer',
+            email: loan.customerId?.email || loan.email,
+            primaryMobile: loan.customerId?.primaryMobile || loan.customerId?.mobile || loan.mobile
+          };
+
+          // Prepare payment data
+          const paymentData = {
             loanId: loan.loanId,
             amount: nextInstallment.amount,
             dueDate: nextInstallment.dueDate,
@@ -59,15 +69,20 @@ async function sendUpcomingPaymentReminders() {
             totalPaid: loan.totalPaid,
             remainingBalance: loan.remainingBalance,
             installmentNumber: nextInstallment.number,
-            totalInstallments: loan.term
-          });
+            totalInstallments: loan.term,
+            customerName: customerData.name
+          };
+
+          // Send both email and SMS reminders
+          const result = await paymentNotificationService.sendPaymentReminder(customerData, paymentData);
           
-          if (emailSent) {
+          if (result.overall.success) {
             emailsSent++;
-            console.log(`Sent ${daysUntilDue === 0 ? 'due today' : `${daysUntilDue} day${daysUntilDue > 1 ? 's' : ''} advance`} reminder to ${loan.name} (${loan.email}) for loan ${loan.loanId}`);
+            console.log(`Sent ${daysUntilDue === 0 ? 'due today' : `${daysUntilDue} day${daysUntilDue > 1 ? 's' : ''} advance`} reminder to ${customerData.name} for loan ${loan.loanId}`);
+            console.log(`  Email: ${result.email.success ? '✅' : '❌'}, SMS: ${result.sms.success ? '✅' : '❌'}`);
           }
         } catch (error) {
-          console.error(`Failed to send reminder to ${loan.email} for loan ${loan.loanId}:`, error);
+          console.error(`Failed to send reminder for loan ${loan.loanId}:`, error);
         }
       }
     }
@@ -92,7 +107,7 @@ async function sendOverduePaymentReminders() {
       status: 'active',
       'installments.dueDate': { $lt: today },
       'installments.status': { $in: ['pending', 'partial'] }
-    });
+    }).populate('customerId');
     
     console.log(`Found ${loans.length} loans with overdue payments`);
     
@@ -109,9 +124,15 @@ async function sendOverduePaymentReminders() {
         // Send overdue reminders for any overdue payment (removed specific day restrictions)
         if (daysOverdue > 0) {
           try {
-            const emailSent = await sendPaymentReminderEmail({
-              to: loan.email,
-              name: loan.name,
+            // Prepare customer data
+            const customerData = {
+              name: loan.customerId?.name || loan.name || 'Customer',
+              email: loan.customerId?.email || loan.email,
+              primaryMobile: loan.customerId?.primaryMobile || loan.customerId?.mobile || loan.mobile
+            };
+
+            // Prepare payment data
+            const paymentData = {
               loanId: loan.loanId,
               amount: installment.amount,
               dueDate: installment.dueDate,
@@ -121,15 +142,20 @@ async function sendOverduePaymentReminders() {
               totalPaid: loan.totalPaid,
               remainingBalance: loan.remainingBalance,
               installmentNumber: installment.number,
-              totalInstallments: loan.term
-            });
+              totalInstallments: loan.term,
+              customerName: customerData.name
+            };
+
+            // Send both email and SMS reminders
+            const result = await paymentNotificationService.sendPaymentReminder(customerData, paymentData);
             
-            if (emailSent) {
+            if (result.overall.success) {
               emailsSent++;
-              console.log(`Sent overdue reminder (${daysOverdue} days) to ${loan.name} (${loan.email}) for loan ${loan.loanId}`);
+              console.log(`Sent overdue reminder (${daysOverdue} days) to ${customerData.name} for loan ${loan.loanId}`);
+              console.log(`  Email: ${result.email.success ? '✅' : '❌'}, SMS: ${result.sms.success ? '✅' : '❌'}`);
             }
           } catch (error) {
-            console.error(`Failed to send overdue reminder to ${loan.email} for loan ${loan.loanId}:`, error);
+            console.error(`Failed to send overdue reminder for loan ${loan.loanId}:`, error);
           }
         }
       }
@@ -181,9 +207,15 @@ async function sendWeeklySummaryReminders() {
       // Send weekly summary if payment is due within 7 days
       if (daysUntilDue <= 7) {
         try {
-          const emailSent = await sendPaymentReminderEmail({
-            to: loan.email,
-            name: loan.name,
+          // Prepare customer data
+          const customerData = {
+            name: loan.customerId?.name || loan.name || 'Customer',
+            email: loan.customerId?.email || loan.email,
+            primaryMobile: loan.customerId?.primaryMobile || loan.customerId?.mobile || loan.mobile
+          };
+
+          // Prepare payment data
+          const paymentData = {
             loanId: loan.loanId,
             amount: nextInstallment.amount,
             dueDate: nextInstallment.dueDate,
@@ -192,15 +224,20 @@ async function sendWeeklySummaryReminders() {
             totalPaid: loan.totalPaid,
             remainingBalance: loan.remainingBalance,
             installmentNumber: nextInstallment.number,
-            totalInstallments: loan.term
-          });
+            totalInstallments: loan.term,
+            customerName: customerData.name
+          };
+
+          // Send both email and SMS reminders
+          const result = await paymentNotificationService.sendPaymentReminder(customerData, paymentData);
           
-          if (emailSent) {
+          if (result.overall.success) {
             emailsSent++;
-            console.log(`Sent weekly summary to ${loan.name} (${loan.email}) for loan ${loan.loanId}`);
+            console.log(`Sent weekly summary to ${customerData.name} for loan ${loan.loanId}`);
+            console.log(`  Email: ${result.email.success ? '✅' : '❌'}, SMS: ${result.sms.success ? '✅' : '❌'}`);
           }
         } catch (error) {
-          console.error(`Failed to send weekly summary to ${loan.email} for loan ${loan.loanId}:`, error);
+          console.error(`Failed to send weekly summary for loan ${loan.loanId}:`, error);
         }
       }
     }
