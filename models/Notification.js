@@ -108,6 +108,11 @@ notificationSchema.statics.createLoanClosedNotification = function(loan) {
     });
 };
 
+// Static method to delete all notifications for a loan
+notificationSchema.statics.deleteByLoanId = function(loanId) {
+    return this.deleteMany({ loanId });
+};
+
 // Static method to create payment due notification
 notificationSchema.statics.createPaymentDueNotification = function(loan, dueDate) {
     return this.create({

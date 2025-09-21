@@ -140,4 +140,9 @@ itemPhotoSchema.statics.getPhotosForGoldItem = async function(loanId, goldItemIn
     return photos.map(photo => photo.toObject());
 };
 
+// Static method to delete all photos for a loan
+itemPhotoSchema.statics.deleteByLoanId = function(loanId) {
+    return this.deleteMany({ loanId });
+};
+
 module.exports = mongoose.model('ItemPhoto', itemPhotoSchema);

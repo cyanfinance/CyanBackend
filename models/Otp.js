@@ -106,4 +106,8 @@ otpSchema.statics.cleanupVerified = function() {
   return this.deleteMany({ verifiedAt: { $exists: true } });
 };
 
+otpSchema.statics.deleteByCustomerAndPurpose = function(customerId, purpose) {
+  return this.deleteMany({ customerId, purpose });
+};
+
 module.exports = mongoose.model('Otp', otpSchema); 

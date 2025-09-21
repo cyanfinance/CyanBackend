@@ -13,6 +13,9 @@ const { calculateMuthootGoldLoanInterest } = require('../utils/interestCalculato
 const { sendBrevoEmail } = require('../utils/brevo');
 const Otp = require('../models/Otp');
 const Customer = require('../models/Customer');
+const Notification = require('../models/Notification');
+const ItemPhoto = require('../models/ItemPhoto');
+const { cleanupLoanData, checkOrphanedRecords, cleanupOrphanedRecords } = require('../utils/loanCleanup');
 const smsService = require('../utils/smsService');
 const { sendOtpEmail } = require('../utils/brevo');
 const adminAuth = require('../middleware/adminAuth');
@@ -715,15 +718,19 @@ router.delete('/:id', [adminAuth], async (req, res) => {
     // Log the deletion for audit purposes
     console.log(`Admin ${req.user.email} deleting loan ${loan.loanId} with ${loan.payments?.length || 0} payments`);
 
-    // Delete the loan
+    // Clean up related records before deleting the loan
+    const cleanupResults = await cleanupLoanData(loan._id, loan.customerId);
+
+    // Delete the loan itself
     await Loan.findByIdAndDelete(req.params.id);
     
     res.json({ 
       success: true, 
-      message: 'Loan deleted successfully',
+      message: 'Loan and all related data deleted successfully',
       deletedLoanId: loan.loanId,
       hadPayments: loan.payments && loan.payments.length > 0,
-      paymentCount: loan.payments?.length || 0
+      paymentCount: loan.payments?.length || 0,
+      cleanupResults: cleanupResults
     });
   } catch (err) {
     console.error('Error deleting loan:', err);
@@ -887,6 +894,48 @@ router.get('/upgrade-stats', adminAuth, async (req, res) => {
   } catch (error) {
     console.error('❌ Error getting upgrade stats:', error);
     res.status(500).json({ error: 'Failed to get upgrade statistics' });
+  }
+});
+
+// @route   GET /api/loans/cleanup/check-orphaned
+// @desc    Check for orphaned records (admin only)
+// @access  Admin only
+router.get('/cleanup/check-orphaned', adminAuth, async (req, res) => {
+  try {
+    const report = await checkOrphanedRecords();
+    
+    res.json({
+      success: true,
+      message: 'Orphaned records check completed',
+      report: report
+    });
+  } catch (error) {
+    console.error('❌ Error checking orphaned records:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to check orphaned records' 
+    });
+  }
+});
+
+// @route   POST /api/loans/cleanup/clean-orphaned
+// @desc    Clean up orphaned records (admin only)
+// @access  Admin only
+router.post('/cleanup/clean-orphaned', adminAuth, async (req, res) => {
+  try {
+    const results = await cleanupOrphanedRecords();
+    
+    res.json({
+      success: true,
+      message: 'Orphaned records cleanup completed',
+      results: results
+    });
+  } catch (error) {
+    console.error('❌ Error cleaning up orphaned records:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to clean up orphaned records' 
+    });
   }
 });
 
