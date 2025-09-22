@@ -1560,4 +1560,122 @@ router.get('/upgrade-statistics', [auth, adminAuth], async (req, res) => {
     }
 });
 
+// @route   POST /api/admin/loans/:loanId/renew
+// @desc    Renew a closed loan
+// @access  Private (Admin only)
+router.post('/loans/:loanId/renew', [auth, adminAuth, [
+    body('amount').isNumeric().withMessage('Amount must be a number'),
+    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
+    body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months')
+]], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const { loanId } = req.params;
+        const { amount, interestRate, term } = req.body;
+
+        // Find the loan
+        const loan = await Loan.findById(loanId);
+        if (!loan) {
+            return res.status(404).json({ message: 'Loan not found' });
+        }
+
+        // Check if loan is closed
+        if (loan.status !== 'closed') {
+            return res.status(400).json({ message: 'Only closed loans can be renewed' });
+        }
+
+        // Calculate new loan details using Muthoot method
+        const disbursementDate = new Date();
+        const closureDate = new Date(disbursementDate);
+        closureDate.setMonth(closureDate.getMonth() + term);
+        
+        const muthootResult = calcMuthoot({
+            principal: amount,
+            annualRate: interestRate,
+            disbursementDate: disbursementDate,
+            closureDate: closureDate
+        });
+
+        // Calculate daily interest fields
+        const dailyInterestRate = (interestRate / 100) / 365;
+        const totalDays = term * 30;
+        const dailyInterestAmount = amount * dailyInterestRate;
+
+        // Update loan with renewal details
+        loan.amount = amount;
+        loan.interestRate = interestRate;
+        loan.term = term;
+        loan.status = 'active';
+        loan.createdAt = disbursementDate; // Update to present date
+        loan.monthlyPayment = Math.round(muthootResult.totalAmount / term);
+        loan.totalPayment = muthootResult.totalAmount;
+        loan.remainingBalance = muthootResult.totalAmount;
+        loan.totalPaid = 0; // Reset total paid
+        loan.dailyInterestRate = dailyInterestRate;
+        loan.totalDays = totalDays;
+        loan.dailyInterestAmount = dailyInterestAmount;
+        loan.closedDate = null; // Remove closed date
+
+        // Reset payments array
+        loan.payments = [];
+
+        // Create new installment schedule
+        loan.installments = [];
+        let currentDate = new Date(disbursementDate);
+        
+        for (let i = 1; i <= term; i++) {
+            currentDate = new Date(currentDate);
+            currentDate.setMonth(currentDate.getMonth() + 1);
+            
+            loan.installments.push({
+                number: i,
+                dueDate: new Date(currentDate),
+                amount: loan.monthlyPayment,
+                status: 'pending',
+                amountPaid: 0
+            });
+        }
+
+        await loan.save();
+
+        // Create notification for loan renewal
+        const notification = new Notification({
+            loanId: loan._id,
+            type: 'new_loan',
+            title: 'Loan Renewed',
+            message: `Your loan ${loan.loanId} has been renewed with amount ₹${amount.toLocaleString()} for ${term} months at ${interestRate}% interest rate.`,
+            customerName: loan.name,
+            customerMobile: loan.primaryMobile,
+            amount: amount,
+            isRead: false
+        });
+        await notification.save();
+
+        res.json({
+            success: true,
+            message: 'Loan renewed successfully',
+            data: {
+                loanId: loan.loanId,
+                amount: loan.amount,
+                interestRate: loan.interestRate,
+                term: loan.term,
+                status: loan.status,
+                renewedAt: disbursementDate
+            }
+        });
+
+    } catch (error) {
+        console.error('Error renewing loan:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while renewing loan',
+            error: error.message
+        });
+    }
+});
+
 module.exports = router; 
