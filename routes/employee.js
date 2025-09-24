@@ -7,7 +7,7 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 const { sendBrevoEmail } = require('../utils/brevo');
 const Otp = require('../models/Otp');
-const { calculateMuthootGoldLoanInterest: calcMuthoot } = require('../utils/interestCalculator');
+const { calculateMuthootGoldLoanInterest: calcMuthoot, calculateClientInterestMethod } = require('../utils/interestCalculator');
 
 // @route   GET /api/employee/check-aadhar/:aadharNumber
 // @desc    Check if an Aadhar number exists and get customer details (employee access)
@@ -278,16 +278,17 @@ router.post('/loans', [
             }
         } while (attempts < maxAttempts);
 
-        // Calculate using Muthoot method for consistency with frontend
+        // Calculate using client's interest method
         const disbursementDate = new Date();
         const closureDate = new Date(disbursementDate);
         closureDate.setMonth(closureDate.getMonth() + Number(finalTerm));
         
-        const muthootResult = calcMuthoot({
+        const muthootResult = calculateClientInterestMethod({
             principal: Number(finalAmount),
             annualRate: Number(interestRate),
             disbursementDate: disbursementDate,
-            closureDate: closureDate
+            closureDate: closureDate,
+            termMonths: Number(finalTerm)
         });
         
         // Calculate daily interest fields for tracking
@@ -763,7 +764,7 @@ router.post('/loans/:loanId/renew', [auth, [
         loan.term = term;
         loan.status = 'active';
         loan.createdAt = disbursementDate; // Update to present date
-        loan.monthlyPayment = Math.round(muthootResult.totalAmount / term);
+        loan.monthlyPayment = muthootResult.monthlyPayment;
         loan.totalPayment = muthootResult.totalAmount;
         loan.remainingBalance = muthootResult.totalAmount;
         loan.totalPaid = 0; // Reset total paid

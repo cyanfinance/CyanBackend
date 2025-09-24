@@ -38,4 +38,37 @@ function calculateMuthootGoldLoanInterest({
   };
 }
 
-module.exports = { calculateMuthootGoldLoanInterest }; 
+// New function that matches client's calculation method using Simple Interest Formula
+function calculateClientInterestMethod({
+  principal,
+  annualRate,
+  disbursementDate,
+  closureDate,
+  termMonths
+}) {
+  // Simple Interest Formula: Interest = (P × R × T) / 100
+  // Where P = Principal, R = Annual Rate, T = Time in years
+  
+  const timeInYears = termMonths / 12;
+  const totalInterest = (principal * annualRate * timeInYears) / 100;
+  const monthlyInterest = totalInterest / termMonths;
+  
+  // Total amount to be paid (principal + interest)
+  const totalAmount = principal + totalInterest;
+  
+  // Monthly payment = total amount ÷ months (principal + interest each month)
+  const monthlyPayment = totalAmount / termMonths;
+  const monthlyPrincipal = monthlyPayment - monthlyInterest;
+
+  return {
+    totalInterest: Math.round(totalInterest),
+    totalAmount: Math.round(totalAmount),
+    monthlyPayment: Math.round(monthlyPayment),
+    monthlyInterest: Math.round(monthlyInterest),
+    monthlyPrincipal: Math.round(monthlyPrincipal),
+    effectiveDays: termMonths * 30,
+    months: termMonths
+  };
+}
+
+module.exports = { calculateMuthootGoldLoanInterest, calculateClientInterestMethod }; 

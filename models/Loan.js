@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Notification = require('./Notification');
 const { calculateMuthootGoldLoanInterest } = require('./Notification');
-const { calculateMuthootGoldLoanInterest: calcMuthoot } = require('../utils/interestCalculator');
+const { calculateMuthootGoldLoanInterest: calcMuthoot, calculateClientInterestMethod } = require('../utils/interestCalculator');
 
 const goldItemSchema = new mongoose.Schema({
     description: String,
@@ -352,16 +352,17 @@ loanSchema.pre('save', function(next) {
         // Store original interest rate
         this.originalInterestRate = this.interestRate;
         
-        // Use Muthoot calculation method for consistency with frontend
+        // Use client's interest calculation method
         const disbursementDate = this.createdAt || new Date();
         const closureDate = new Date(disbursementDate);
         closureDate.setMonth(closureDate.getMonth() + this.term);
         
-        const muthootResult = calcMuthoot({
+        const muthootResult = calculateClientInterestMethod({
             principal: this.amount,
             annualRate: this.interestRate,
             disbursementDate: disbursementDate,
-            closureDate: closureDate
+            closureDate: closureDate,
+            termMonths: this.term
         });
         
         // Calculate daily interest amount for tracking
@@ -372,8 +373,8 @@ loanSchema.pre('save', function(next) {
         this.totalDays = totalDays;
         this.dailyInterestAmount = this.amount * dailyRate;
         
-        // Use Muthoot calculation results
-        this.monthlyPayment = Math.round(muthootResult.totalAmount / this.term);
+        // Use client's calculation results
+        this.monthlyPayment = muthootResult.monthlyPayment;
         this.totalPayment = muthootResult.totalAmount;
         this.remainingBalance = this.totalPayment;
 
@@ -545,12 +546,16 @@ loanSchema.methods.calculateEarlyRepaymentAmount = function(repaymentDate = new 
     effectiveRepaymentDate.setDate(effectiveRepaymentDate.getDate() + 1);
   }
 
-  // Calculate interest as per Muthoot logic
-  const result = calcMuthoot({
+  // Calculate interest as per client's logic
+  const daysDiff = Math.ceil((effectiveRepaymentDate - disbursementDate) / (1000 * 60 * 60 * 24));
+  const monthsElapsed = Math.ceil(daysDiff / 30);
+  
+  const result = calculateClientInterestMethod({
     principal,
     annualRate,
     disbursementDate,
-    closureDate: effectiveRepaymentDate
+    closureDate: effectiveRepaymentDate,
+    termMonths: monthsElapsed
   });
 
   // Example rebate: 2% off interest if repaid within 30 days
@@ -727,12 +732,13 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     
     // Calculate total payment for the remaining 3 months only
     // Customer needs to pay the full amount (principal + interest) in 3 months
-    const { calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
-    const { totalAmount: newTotalPayment, totalInterest: newTotalInterest } = calculateMuthootGoldLoanInterest({
+    const { calculateClientInterestMethod } = require('../utils/interestCalculator');
+    const { totalAmount: newTotalPayment, totalInterest: newTotalInterest } = calculateClientInterestMethod({
       principal: this.amount,
       annualRate: newRate,
       disbursementDate: today, // Start from upgrade date, not original loan date
-      closureDate: newTermEndDate
+      closureDate: newTermEndDate,
+      termMonths: 3
     });
     
     const totalDaysFromStart = Math.floor((newTermEndDate - loanStartDate) / (1000 * 60 * 60 * 24));

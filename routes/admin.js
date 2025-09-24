@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const Otp = require('../models/Otp');
 const { processInterestRateUpgrades, getUpgradeStatistics } = require('../scripts/interestRateUpgradeManager');
 const Notification = require('../models/Notification');
-const { calculateMuthootGoldLoanInterest: calcMuthoot, calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
+const { calculateMuthootGoldLoanInterest: calcMuthoot, calculateMuthootGoldLoanInterest, calculateClientInterestMethod } = require('../utils/interestCalculator');
 
 // @route   GET /api/admin/check-aadhar/:aadharNumber
 // @desc    Check if an Aadhar number exists and get customer details
@@ -201,16 +201,17 @@ router.post('/loans', [
             }
         } while (attempts < maxAttempts);
 
-        // Calculate using Muthoot method for consistency with frontend
+        // Calculate using client's interest method
         const disbursementDate = new Date();
         const closureDate = new Date(disbursementDate);
         closureDate.setMonth(closureDate.getMonth() + Number(finalTerm));
         
-        const muthootResult = calcMuthoot({
+        const muthootResult = calculateClientInterestMethod({
             principal: Number(finalAmount),
             annualRate: Number(interestRate),
             disbursementDate: disbursementDate,
-            closureDate: closureDate
+            closureDate: closureDate,
+            termMonths: Number(finalTerm)
         });
         
         // Calculate daily interest fields for tracking
@@ -1611,7 +1612,7 @@ router.post('/loans/:loanId/renew', [auth, adminAuth, [
         loan.term = term;
         loan.status = 'active';
         loan.createdAt = disbursementDate; // Update to present date
-        loan.monthlyPayment = Math.round(muthootResult.totalAmount / term);
+        loan.monthlyPayment = muthootResult.monthlyPayment;
         loan.totalPayment = muthootResult.totalAmount;
         loan.remainingBalance = muthootResult.totalAmount;
         loan.totalPaid = 0; // Reset total paid

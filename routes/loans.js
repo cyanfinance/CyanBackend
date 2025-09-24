@@ -9,7 +9,7 @@ const apiKey = defaultClient.authentications['api-key'];
 apiKey.apiKey = process.env.BREVO_API_KEY;
 const nodemailer = require('nodemailer');
 const path = require('path');
-const { calculateMuthootGoldLoanInterest } = require('../utils/interestCalculator');
+const { calculateMuthootGoldLoanInterest, calculateClientInterestMethod } = require('../utils/interestCalculator');
 const { sendBrevoEmail } = require('../utils/brevo');
 const Otp = require('../models/Otp');
 const Customer = require('../models/Customer');
@@ -513,15 +513,25 @@ router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
 
 // Calculate interest as per Muthoot policy
 router.post('/calculate-interest', (req, res) => {
-  const { principal, annualRate, disbursementDate, closureDate } = req.body;
+  const { principal, annualRate, disbursementDate, closureDate, termMonths } = req.body;
   if (!principal || !annualRate || !disbursementDate || !closureDate) {
     return res.status(400).json({ message: 'Missing required fields' });
   }
-  const result = calculateMuthootGoldLoanInterest({
+  
+  // Use termMonths from request body, or calculate from dates if not provided
+  let calculatedTermMonths = termMonths;
+  if (!calculatedTermMonths) {
+    const startDate = new Date(disbursementDate);
+    const endDate = new Date(closureDate);
+    calculatedTermMonths = Math.round((endDate - startDate) / (1000 * 60 * 60 * 24 * 30.44)); // Use average days per month
+  }
+  
+  const result = calculateClientInterestMethod({
     principal,
     annualRate,
     disbursementDate: new Date(disbursementDate),
-    closureDate: new Date(closureDate)
+    closureDate: new Date(closureDate),
+    termMonths: calculatedTermMonths
   });
   res.json(result);
 });
