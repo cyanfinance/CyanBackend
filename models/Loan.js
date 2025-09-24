@@ -80,7 +80,7 @@ const loanSchema = new mongoose.Schema({
     },
     email: {
         type: String,
-        required: true
+        required: false
     },
     primaryMobile: {
         type: String,
