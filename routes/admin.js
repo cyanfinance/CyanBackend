@@ -75,6 +75,7 @@ router.post('/loans', [
 
         // Extract customer fields
         const {
+            customerId,
             aadharNumber,
             name,
             email,
@@ -96,11 +97,25 @@ router.post('/loans', [
         const finalTerm = term;
 
         // Find or create customer
-        let customer = await Customer.findOne({ aadharNumber });
+        let customer;
         let isNewCustomer = false;
         
+        if (customerId) {
+            // Use the provided customerId (from OTP verification)
+            customer = await Customer.findById(customerId);
+            console.log(`[ADMIN] Found customer by ID: ${customerId}`, customer ? 'Yes' : 'No');
+        } else {
+            // Fallback to Aadhar number lookup
+            customer = await Customer.findOne({ aadharNumber });
+            console.log(`[ADMIN] Found customer by Aadhar: ${aadharNumber}`, customer ? 'Yes' : 'No');
+        }
+        
         if (!customer) {
-            // Create new customer
+            if (customerId) {
+                // Customer ID was provided but customer not found
+                return res.status(404).json({ message: 'Customer not found with the provided ID' });
+            }
+            // Create new customer (only if no customerId was provided)
             customer = await Customer.create({
                 aadharNumber,
                 name,
@@ -137,8 +152,8 @@ router.post('/loans', [
                 console.error('Failed to send welcome email:', emailErr);
                 // Continue with loan creation even if email fails
             }
-        } else {
-            // Update existing customer's information
+        } else if (!customerId) {
+            // Update existing customer's information (only if no customerId was provided)
             customer.name = name;
             customer.email = email;
             customer.primaryMobile = primaryMobile;
@@ -804,9 +819,7 @@ router.post('/customers', [
         if (err.code === 11000 && err.keyPattern && err.keyPattern.primaryMobile) {
             return res.status(400).json({ errors: [{ msg: 'This primary mobile number is already registered. Please use a different number.' }] });
         }
-        if (err.code === 11000 && err.keyPattern && err.keyPattern.email) {
-            return res.status(400).json({ errors: [{ msg: 'This email is already registered. Please use a different email.' }] });
-        }
+        // Email is no longer unique, so no need to handle email duplicates
         console.error('Error adding customer:', err);
         res.status(500).json({ message: 'Server error' });
     }
