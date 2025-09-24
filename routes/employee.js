@@ -167,6 +167,9 @@ router.post('/loans', [
             monthlyPayment,
             totalPayment
         } = req.body;
+        
+        // Convert empty email to null to avoid unique constraint issues
+        const processedEmail = email && email.trim() ? email.trim() : null;
 
         // Use the correct field names, falling back to alternates if needed
         const finalAmount = amount || loanAmount;
@@ -181,7 +184,7 @@ router.post('/loans', [
             customer = await Customer.create({
                 aadharNumber,
                 name,
-                email,
+                email: processedEmail,
                 primaryMobile,
                 secondaryMobile,
                 presentAddress,
@@ -217,7 +220,7 @@ router.post('/loans', [
         } else {
             // Update existing customer's information
             customer.name = name;
-            customer.email = email;
+            customer.email = processedEmail;
             customer.primaryMobile = primaryMobile;
             customer.secondaryMobile = secondaryMobile;
             customer.presentAddress = presentAddress;
@@ -436,6 +439,9 @@ router.post('/customers', auth, async (req, res) => {
     try {
         const { aadharNumber, name, email, primaryMobile, secondaryMobile, presentAddress, permanentAddress, emergencyContact } = req.body;
         
+        // Convert empty email to null to avoid unique constraint issues
+        const processedEmail = email && email.trim() ? email.trim() : null;
+        
         // Validate that mobile numbers are different
         const mobileNumbers = new Set([
             primaryMobile?.trim(),
@@ -457,7 +463,7 @@ router.post('/customers', auth, async (req, res) => {
             customer = new Customer({
                 aadharNumber,
                 name,
-                email,
+                email: processedEmail,
                 primaryMobile,
                 secondaryMobile,
                 presentAddress,
@@ -469,7 +475,7 @@ router.post('/customers', auth, async (req, res) => {
         } else {
             // Update customer details and set verified: false if not already verified
             customer.name = name;
-            customer.email = email;
+            customer.email = processedEmail;
             customer.primaryMobile = primaryMobile;
             customer.secondaryMobile = secondaryMobile;
             customer.presentAddress = presentAddress;

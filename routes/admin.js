@@ -703,6 +703,9 @@ router.post('/customers', [
         console.log('[ADMIN] Received customer creation request:', JSON.stringify(req.body, null, 2));
         const { aadharNumber, name, email, primaryMobile, secondaryMobile, presentAddress, permanentAddress, emergencyContact } = req.body;
         
+        // Convert empty email to null to avoid unique constraint issues
+        const processedEmail = email && email.trim() ? email.trim() : null;
+        
         // Validate that mobile numbers are different
         const mobileNumbers = new Set([
             primaryMobile?.trim(),
@@ -724,7 +727,7 @@ router.post('/customers', [
             customer = await Customer.create({
                 aadharNumber,
                 name,
-                email,
+                email: processedEmail,
                 primaryMobile,
                 secondaryMobile,
                 presentAddress,
@@ -735,7 +738,7 @@ router.post('/customers', [
         } else {
             // Update customer details and set verified: false if not already verified
             customer.name = name;
-            customer.email = email;
+            customer.email = processedEmail;
             customer.primaryMobile = primaryMobile;
             customer.secondaryMobile = secondaryMobile;
             customer.presentAddress = presentAddress;
