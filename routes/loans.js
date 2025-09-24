@@ -30,7 +30,7 @@ router.post('/', [auth, [
     body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months'),
     body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('customerId').notEmpty().withMessage('customerId is required'),
-    body('email').isEmail().withMessage('Valid email is required')
+    body('email').optional().isEmail().withMessage('Valid email is required')
 ]], async (req, res) => {
     try {
         const errors = validationResult(req);
@@ -38,19 +38,21 @@ router.post('/', [auth, [
             return res.status(400).json({ errors: errors.array() });
         }
         const { amount, purpose, term, interestRate, customerId, email } = req.body;
-        // Enforce OTP verification for loan creation
-        const now = new Date();
-        const otpVerified = await Otp.findOne({
-            email,
-            customerId,
-            purpose: 'loan_creation',
-            expiresAt: { $gte: now }
-        });
-        if (!otpVerified) {
-            return res.status(400).json({ errors: [{ msg: 'OTP verification required for loan creation. Please verify OTP sent to customer email.' }] });
+        // Enforce OTP verification for loan creation (only if email is provided)
+        if (email && email.trim()) {
+            const now = new Date();
+            const otpVerified = await Otp.findOne({
+                email,
+                customerId,
+                purpose: 'loan_creation',
+                expiresAt: { $gte: now }
+            });
+            if (!otpVerified) {
+                return res.status(400).json({ errors: [{ msg: 'OTP verification required for loan creation. Please verify OTP sent to customer email.' }] });
+            }
+            // OTP is valid, delete it to prevent reuse
+            await otpVerified.deleteOne();
         }
-        // OTP is valid, delete it to prevent reuse
-        await otpVerified.deleteOne();
 
         // Generate custom loanId
         const year = now.getFullYear() % 1000; // last 3 digits
@@ -550,8 +552,12 @@ router.post('/:id/calculate-early-repayment', async (req, res) => {
 router.post('/send-otp', auth, async (req, res) => {
   try {
     const { customerId, email } = req.body;
-    if (!customerId || !email) {
-      return res.status(400).json({ errors: [{ msg: 'customerId and email are required' }] });
+    if (!customerId) {
+      return res.status(400).json({ errors: [{ msg: 'customerId is required' }] });
+    }
+    
+    if (!email || !email.trim()) {
+      return res.status(400).json({ errors: [{ msg: 'Email is required for OTP verification' }] });
     }
 
     // Find customer to get phone number
@@ -628,8 +634,12 @@ router.post('/send-otp', auth, async (req, res) => {
 router.post('/verify-otp', auth, async (req, res) => {
   try {
     const { customerId, email, otp } = req.body;
-    if (!customerId || !email || !otp) {
-      return res.status(400).json({ errors: [{ msg: 'customerId, email, and otp are required' }] });
+    if (!customerId || !otp) {
+      return res.status(400).json({ errors: [{ msg: 'customerId and otp are required' }] });
+    }
+    
+    if (!email || !email.trim()) {
+      return res.status(400).json({ errors: [{ msg: 'Email is required for OTP verification' }] });
     }
     const otpDoc = await Otp.findOne({ email, customerId, otp, purpose: 'loan_creation' });
     if (!otpDoc) {

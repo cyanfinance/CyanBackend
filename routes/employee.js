@@ -226,8 +226,9 @@ router.post('/loans', [
             await customer.save();
         }
 
+        // Always require customer verification (via SMS OTP)
         if (!customer.verified) {
-            return res.status(400).json({ message: 'Customer email not verified. Please verify before creating a loan.' });
+            return res.status(400).json({ message: 'Customer not verified. Please verify customer via SMS OTP before creating a loan.' });
         }
 
         // Validate goldItems array
@@ -482,11 +483,17 @@ router.post('/customers', auth, async (req, res) => {
         console.log(`[EMPLOYEE] Generated OTP ${otp} for mobile ${primaryMobile}, expires at ${expiresAt}`);
         
         // Remove any previous unused OTPs
-        await Otp.deleteMany({ email });
+        if (email && email.trim()) {
+            await Otp.deleteMany({ email });
+        }
+        // Also remove OTPs by phone number
+        if (primaryMobile && primaryMobile.trim()) {
+            await Otp.deleteMany({ phoneNumber: primaryMobile.trim() });
+        }
         
         // Create OTP record with phone number
         const otpData = {
-            email,
+            email: email || '', // Allow empty email
             otp,
             expiresAt,
             purpose: 'customer_registration',
@@ -524,7 +531,12 @@ router.post('/customers', auth, async (req, res) => {
             await customer.save();
         }
         
-        res.json({ success: true, message: 'OTP sent to mobile number for verification.' });
+        res.json({ 
+            success: true, 
+            message: email && email.trim() 
+                ? 'OTP sent to mobile number for verification.' 
+                : 'Customer created successfully. OTP sent to mobile number for verification.'
+        });
     } catch (err) {
         if (err.code === 11000 && err.keyPattern && err.keyPattern.primaryMobile) {
             return res.status(400).json({ errors: [{ msg: 'This primary mobile number is already registered. Please use a different number.' }] });
@@ -538,17 +550,34 @@ router.post('/customers', auth, async (req, res) => {
 });
 
 // @route   POST /api/employee/verify-customer-otp
-// @desc    Verify customer email OTP (employee access)
+// @desc    Verify customer OTP (SMS-based, employee access)
 router.post('/verify-customer-otp', auth, async (req, res) => {
     try {
-        const { email, otp } = req.body;
-        console.log(`[EMPLOYEE] Verifying OTP for email: ${email}, OTP: ${otp}`);
+        const { email, otp, phoneNumber } = req.body;
+        console.log(`[EMPLOYEE] Verifying OTP for email: ${email}, phone: ${phoneNumber}, OTP: ${otp}`);
         
-        if (!email || !otp) {
-            return res.status(400).json({ message: 'Email and OTP are required' });
+        if (!otp) {
+            return res.status(400).json({ message: 'OTP is required' });
         }
         
-        const otpDoc = await Otp.findOne({ email: email.trim(), otp: String(otp).trim(), purpose: 'customer_registration' });
+        // Find OTP by phone number (primary) or email (fallback)
+        let otpDoc;
+        if (phoneNumber && phoneNumber.trim()) {
+            otpDoc = await Otp.findOne({ 
+                phoneNumber: phoneNumber.trim(), 
+                otp: String(otp).trim(), 
+                purpose: 'customer_registration' 
+            });
+        } else if (email && email.trim()) {
+            otpDoc = await Otp.findOne({ 
+                email: email.trim(), 
+                otp: String(otp).trim(), 
+                purpose: 'customer_registration' 
+            });
+        } else {
+            return res.status(400).json({ message: 'Either phone number or email is required for OTP verification' });
+        }
+        
         console.log(`[EMPLOYEE] OTP document found:`, otpDoc ? 'Yes' : 'No');
         
         if (!otpDoc) {
@@ -560,16 +589,35 @@ router.post('/verify-customer-otp', auth, async (req, res) => {
             return res.status(400).json({ message: 'OTP has expired. Please request a new OTP.' });
         }
         
-        // Set customer as verified
-        const customer = await Customer.findOneAndUpdate({ email }, { verified: true }, { new: true });
-        await Otp.deleteMany({ email });
+        // Set customer as verified - find by phone number or email
+        let customer;
+        if (phoneNumber && phoneNumber.trim()) {
+            customer = await Customer.findOneAndUpdate(
+                { primaryMobile: phoneNumber.trim() }, 
+                { verified: true }, 
+                { new: true }
+            );
+        } else if (email && email.trim()) {
+            customer = await Customer.findOneAndUpdate(
+                { email: email.trim() }, 
+                { verified: true }, 
+                { new: true }
+            );
+        }
+        
+        // Clean up OTP
+        if (phoneNumber && phoneNumber.trim()) {
+            await Otp.deleteMany({ phoneNumber: phoneNumber.trim() });
+        } else if (email && email.trim()) {
+            await Otp.deleteMany({ email: email.trim() });
+        }
         
         if (!customer) {
             return res.status(404).json({ message: 'Customer not found' });
         }
         
         console.log(`[EMPLOYEE] Customer verified successfully: ${customer.name}`);
-        res.json({ success: true, message: 'Email verified successfully', customer });
+        res.json({ success: true, message: 'Customer verified successfully', customer });
     } catch (err) {
         console.error('Error verifying OTP:', err);
         res.status(500).json({ message: 'Server error' });
