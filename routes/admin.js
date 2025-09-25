@@ -1745,4 +1745,146 @@ router.post('/loans/:loanId/renew', [auth, adminAuth, [
     }
 });
 
+// @route   POST /api/admin/reset-loan-upgrade/:loanId
+// @desc    Reset loan upgrade history for testing purposes
+router.post('/reset-loan-upgrade/:loanId', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId } = req.params;
+        
+        // Find the loan
+        const loan = await Loan.findOne({ loanId: loanId });
+        if (!loan) {
+            return res.status(404).json({
+                success: false,
+                message: 'Loan not found'
+            });
+        }
+        
+        // Reset upgrade history and related fields
+        loan.upgradeHistory = [];
+        loan.currentUpgradeLevel = 0;
+        loan.interestRate = loan.originalInterestRate;
+        loan.interestRateUpgraded = false;
+        loan.interestRateUpgradeDate = undefined;
+        loan.interestRateUpgradeReason = undefined;
+        
+        // Reset auction status
+        loan.auctionStatus = 'not_ready';
+        loan.auctionReadyDate = undefined;
+        loan.auctionScheduledDate = undefined;
+        loan.auctionDate = undefined;
+        loan.auctionNotes = undefined;
+        loan.auctionNotifications = [];
+        
+        // Recalculate original loan details
+        const disbursementDate = loan.createdAt;
+        const closureDate = new Date(disbursementDate);
+        closureDate.setMonth(closureDate.getMonth() + loan.term);
+        
+        const muthootResult = calculateClientInterestMethod({
+            principal: loan.amount,
+            annualRate: loan.originalInterestRate,
+            disbursementDate: disbursementDate,
+            closureDate: closureDate,
+            termMonths: loan.term
+        });
+        
+        // Update loan with original calculations
+        loan.monthlyPayment = muthootResult.monthlyPayment;
+        loan.totalPayment = muthootResult.totalAmount;
+        loan.remainingBalance = Math.max(0, muthootResult.totalAmount - loan.totalPaid);
+        
+        // Recreate installment schedule
+        loan.installments = [];
+        let currentDate = new Date(loan.createdAt);
+        
+        for (let i = 1; i <= loan.term; i++) {
+            currentDate = new Date(currentDate);
+            currentDate.setMonth(currentDate.getMonth() + 1);
+            
+            loan.installments.push({
+                number: i,
+                dueDate: new Date(currentDate),
+                amount: loan.monthlyPayment,
+                status: 'pending',
+                amountPaid: 0
+            });
+        }
+        
+        await loan.save();
+        
+        res.json({
+            success: true,
+            message: 'Loan upgrade history reset successfully',
+            loan: {
+                loanId: loan.loanId,
+                customerName: loan.name,
+                originalInterestRate: loan.originalInterestRate,
+                currentInterestRate: loan.interestRate,
+                currentUpgradeLevel: loan.currentUpgradeLevel,
+                upgradeHistory: loan.upgradeHistory,
+                monthlyPayment: loan.monthlyPayment,
+                totalPayment: loan.totalPayment
+            }
+        });
+        
+    } catch (error) {
+        console.error('Error resetting loan upgrade:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while resetting loan upgrade',
+            error: error.message
+        });
+    }
+});
+
+// @route   POST /api/admin/manual-upgrade/:loanId
+// @desc    Manually trigger loan upgrade for testing
+router.post('/manual-upgrade/:loanId', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId } = req.params;
+        
+        // Find the loan
+        const loan = await Loan.findOne({ loanId: loanId });
+        if (!loan) {
+            return res.status(404).json({
+                success: false,
+                message: 'Loan not found'
+            });
+        }
+        
+        // Check if loan is eligible for upgrade
+        if (loan.status !== 'active') {
+            return res.status(400).json({
+                success: false,
+                message: 'Loan is not active'
+            });
+        }
+        
+        if (loan.currentUpgradeLevel >= 3) {
+            return res.status(400).json({
+                success: false,
+                message: 'Loan has reached maximum upgrade level'
+            });
+        }
+        
+        // Trigger the upgrade
+        const upgradeResult = await loan.upgradeInterestRate('manual_upgrade');
+        
+        res.json({
+            success: true,
+            message: 'Loan upgraded successfully',
+            upgradeDetails: upgradeResult
+        });
+        
+    } catch (error) {
+        console.error('Error in manual upgrade:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error during manual upgrade',
+            error: error.message
+        });
+    }
+});
+
 module.exports = router; 

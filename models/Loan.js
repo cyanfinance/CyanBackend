@@ -546,16 +546,50 @@ loanSchema.methods.calculateEarlyRepaymentAmount = function(repaymentDate = new 
     effectiveRepaymentDate.setDate(effectiveRepaymentDate.getDate() + 1);
   }
 
-  // Calculate interest as per client's logic
+  // For upgraded loans, calculate based on repayment date and current interest rate
+  if (this.interestRateUpgraded && this.upgradeHistory && this.upgradeHistory.length > 0) {
+    // Use clean simple interest calculator with exact days
+    const { calculateSimpleInterest } = require('../utils/cleanInterestCalculator');
+    const result = calculateSimpleInterest(
+      this.amount, // Principal
+      this.interestRate, // Current interest rate
+      disbursementDate, // Start from original loan date
+      effectiveRepaymentDate // End at repayment date (exact days)
+    );
+    
+    // Calculate months for display purposes
+    const monthsFromStart = Math.round(result.timeInDays / 30);
+    
+    return {
+      totalInterest: result.interest,
+      totalAmount: result.totalAmount,
+      rebate: 0,
+      principal: result.principal,
+      // Aliases for frontend compatibility
+      interest: result.interest,
+      minimumDays: 0,
+      minimumInterest: 50,
+      gracePeriodDays: 0,
+      totalDue: result.totalAmount,
+      effectiveDays: result.timeInDays,
+      months: monthsFromStart,
+      gracePeriodApplied: false,
+      minInterestApplied: false,
+      minDaysApplied: false,
+      monthlyPayment: result.totalAmount / monthsFromStart
+    };
+  }
+
+  // For non-upgraded loans, calculate normally
   const daysDiff = Math.ceil((effectiveRepaymentDate - disbursementDate) / (1000 * 60 * 60 * 24));
-  const monthsElapsed = Math.ceil(daysDiff / 30);
+  const termMonths = Math.ceil(daysDiff / 30);
   
   const result = calculateClientInterestMethod({
     principal,
     annualRate,
     disbursementDate,
     closureDate: effectiveRepaymentDate,
-    termMonths: monthsElapsed
+    termMonths: termMonths
   });
 
   // Example rebate: 2% off interest if repaid within 30 days
@@ -730,16 +764,19 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     const newTermEndDate = new Date(today);
     newTermEndDate.setMonth(newTermEndDate.getMonth() + 3); // 3 months from upgrade date
     
-    // Calculate total payment for the remaining 3 months only
-    // Customer needs to pay the full amount (principal + interest) in 3 months
-    const { calculateClientInterestMethod } = require('../utils/interestCalculator');
-    const { totalAmount: newTotalPayment, totalInterest: newTotalInterest } = calculateClientInterestMethod({
-      principal: this.amount,
-      annualRate: newRate,
-      disbursementDate: today, // Start from upgrade date, not original loan date
-      closureDate: newTermEndDate,
-      termMonths: 3
-    });
+    // Calculate total payment from original loan date to upgrade date
+    // Interest is calculated from the original loan start date for the entire period
+    const { calculateSimpleInterest } = require('../utils/cleanInterestCalculator');
+    
+    const result = calculateSimpleInterest(
+      this.amount, // Principal
+      newRate, // New interest rate
+      loanStartDate, // Start from original loan date
+      today // End at upgrade date (exact days)
+    );
+    
+    const newTotalPayment = result.totalAmount;
+    const newTotalInterest = result.interest;
     
     const totalDaysFromStart = Math.floor((newTermEndDate - loanStartDate) / (1000 * 60 * 60 * 24));
     const newDailyRate = (newRate / 100) / 365;
@@ -763,8 +800,8 @@ loanSchema.methods.upgradeInterestRate = async function(reason = 'overdue_upgrad
     const monthsRemaining = 3; // Always 3 months from upgrade date
     this.monthlyPayment = Math.round(newTotalPayment / monthsRemaining);
     
-    // Update term to reflect new end date
-    this.term = Math.ceil(totalDaysFromStart / 30);
+    // Update term to reflect remaining months (3 months from upgrade date)
+    this.term = monthsRemaining;
     
     // Create new installment schedule from today to new end date (3 months)
     this.installments = [];
@@ -1105,19 +1142,18 @@ loanSchema.methods.getUpgradeTimeline = function() {
     
     // Add future upgrade predictions
     if (this.currentUpgradeLevel < 3 && this.originalInterestRate === 18) {
-        const nextUpgradeDate = new Date(loanStartDate);
+        let nextUpgradeDate;
         
-        // Use day-based calculations to match cron job logic
-        let daysToAdd;
         if (this.currentUpgradeLevel === 0) {
-            daysToAdd = this.term * 30; // First upgrade: term * 30 days
-        } else if (this.currentUpgradeLevel === 1) {
-            daysToAdd = 180; // Second upgrade: 180 days (6 months)
-        } else if (this.currentUpgradeLevel === 2) {
-            daysToAdd = 270; // Third upgrade: 270 days (9 months)
+            // First upgrade: 3 months from loan start
+            nextUpgradeDate = new Date(loanStartDate);
+            nextUpgradeDate.setMonth(nextUpgradeDate.getMonth() + this.term);
+        } else {
+            // For subsequent upgrades: 3 months from the last upgrade date
+            const lastUpgrade = this.upgradeHistory[this.upgradeHistory.length - 1];
+            nextUpgradeDate = new Date(lastUpgrade.upgradeDate);
+            nextUpgradeDate.setMonth(nextUpgradeDate.getMonth() + 3);
         }
-        
-        nextUpgradeDate.setDate(nextUpgradeDate.getDate() + daysToAdd);
         
         let nextRate;
         if (this.currentUpgradeLevel === 0) {
