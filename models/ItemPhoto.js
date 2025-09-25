@@ -10,7 +10,7 @@ const itemPhotoSchema = new mongoose.Schema({
     goldItemIndex: {
         type: Number,
         required: true,
-        min: -1
+        min: -2
     },
     filename: {
         type: String,

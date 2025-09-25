@@ -24,6 +24,7 @@ router.get('/check-aadhar/:aadharNumber', auth, async (req, res) => {
                 exists: true,
                 customerDetails: {
                     customerId: loan.customerId,
+                    aadharNumber: loan.aadharNumber,
                     name: loan.name,
                     email: loan.email,
                     primaryMobile: loan.primaryMobile,
@@ -166,7 +167,8 @@ router.post('/loans', [
             term,
             duration,
             monthlyPayment,
-            totalPayment
+            totalPayment,
+            customLoanDate
         } = req.body;
         
         // Convert empty email to null to avoid unique constraint issues
@@ -337,6 +339,8 @@ router.post('/loans', [
             createdBy: req.user._id,
             loanId,
             remainingBalance: muthootResult.totalAmount,
+            // Use custom loan date if provided, otherwise use current date
+            createdAt: customLoanDate ? new Date(customLoanDate) : new Date(),
             totalPaid: 0,
             payments: [],
             dailyInterestRate,

@@ -33,6 +33,7 @@ router.get('/check-aadhar/:aadharNumber', [auth, adminAuth], async (req, res) =>
                 exists: true,
                 customerDetails: {
                     customerId: loan.customerId,
+                    aadharNumber: loan.aadharNumber,
                     name: loan.name,
                     email: loan.email,
                     primaryMobile: loan.primaryMobile,
@@ -89,7 +90,8 @@ router.post('/loans', [
             amount,
             term,
             monthlyPayment,
-            totalPayment
+            totalPayment,
+            customLoanDate
         } = req.body;
 
         // Use the correct field names, falling back to alternates if needed
@@ -257,6 +259,8 @@ router.post('/loans', [
             createdBy: req.user._id,
             loanId,
             remainingBalance: muthootResult.totalAmount,
+            // Use custom loan date if provided, otherwise use current date
+            createdAt: customLoanDate ? new Date(customLoanDate) : new Date(),
             totalPaid: 0,
             payments: [],
             dailyInterestRate,
@@ -568,14 +572,19 @@ router.delete('/customers/:aadharNumber', [auth, adminAuth], async (req, res) =>
 });
 
 // @route   POST /api/admin/employees
-// @desc    Add a new employee (admin only)
+// @desc    Add a new employee or admin (admin only)
 router.post('/employees', [auth, adminAuth, body('email').isEmail(), body('name').notEmpty(), body('aadharNumber').isLength({ min: 12, max: 12 })], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-    const { email, name, mobile, alternateMobile, aadharNumber } = req.body;
+    const { email, name, mobile, alternateMobile, aadharNumber, role } = req.body;
+    
+    // Validate role
+    const validRoles = ['employee', 'admin'];
+    const userRole = role && validRoles.includes(role) ? role : 'employee';
+    
     // Check if user already exists
     let user = await User.findOne({ email });
     if (user) {
@@ -586,27 +595,31 @@ router.post('/employees', [auth, adminAuth, body('email').isEmail(), body('name'
       name,
       email,
       password: 'otp-login', // placeholder, not used
-      role: 'employee',
+      role: userRole,
       aadharNumber,
       primaryMobile: mobile,
       secondaryMobile: alternateMobile
     });
     // Send welcome email with OTP login instructions
     try {
+      const roleTitle = userRole === 'admin' ? 'Admin' : 'Employee';
       await sendBrevoEmail({
         to: email,
-        subject: 'Welcome to Cyan Finance - Employee Account',
+        subject: `Welcome to Cyan Finance - ${roleTitle} Account`,
         html: `<p>Dear ${name},</p>
-          <p>Your employee account has been created on Cyan Finance.</p>
+          <p>Your ${roleTitle.toLowerCase()} account has been created on Cyan Finance.</p>
           <p><b>Login Email:</b> ${email}</p>
+          <p><b>Role:</b> ${roleTitle}</p>
           <p>You can now log in using the OTP-based login system. On the login page https://cyangold.in/login, enter your email and request an OTP to access your account. No password is required.</p>
           <p>Best regards,<br/>Cyan Finance Team</p>`
       });
     } catch (emailErr) {
-      console.error('Failed to send employee welcome email:', emailErr);
+      console.error(`Failed to send ${userRole} welcome email:`, emailErr);
       // Continue even if email fails
     }
-    res.json({ success: true, message: 'Employee registered and email sent.' });
+    
+    const successMessage = userRole === 'admin' ? 'Admin registered and email sent.' : 'Employee registered and email sent.';
+    res.json({ success: true, message: successMessage });
   } catch (err) {
     console.error('Error registering employee:', err);
     res.status(500).json({ message: 'Server error' });

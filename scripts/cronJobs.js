@@ -1,6 +1,5 @@
 const cron = require('node-cron');
 const CronJobHistory = require('../models/CronJobHistory');
-const { processGoldReturnReminders } = require('./goldReturnManager');
 const { processInterestRateUpgrades } = require('./interestRateUpgradeManager');
 const { sendAllPaymentReminders } = require('./sendPaymentReminders');
 
@@ -34,42 +33,6 @@ async function executeJobWithLogging(jobName, jobFunction) {
     }
 }
 
-// Schedule gold return reminders to run daily at 9:00 AM
-const scheduleGoldReturnReminders = () => {
-  cron.schedule('0 9 * * *', async () => {
-    console.log('🕘 Running scheduled gold return reminders...');
-    try {
-      await executeJobWithLogging('gold_return_reminders', processGoldReturnReminders);
-      console.log('✅ Scheduled gold return reminders completed successfully');
-    } catch (error) {
-      console.error('❌ Error in scheduled gold return reminders:', error);
-    }
-  }, {
-    scheduled: true,
-    timezone: "Asia/Kolkata" // Indian Standard Time
-  });
-  
-  console.log('📅 Gold return reminders scheduled to run daily at 9:00 AM IST');
-};
-
-// Schedule admin notifications for overdue returns to run daily at 10:00 AM
-const scheduleAdminNotifications = () => {
-  cron.schedule('0 10 * * *', async () => {
-    console.log('🕘 Running scheduled admin notifications for overdue gold returns...');
-    try {
-      // This will be handled by the main processGoldReturnReminders function
-      await executeJobWithLogging('admin_notifications', processGoldReturnReminders);
-      console.log('✅ Scheduled admin notifications completed successfully');
-    } catch (error) {
-      console.error('❌ Error in scheduled admin notifications:', error);
-    }
-  }, {
-    scheduled: true,
-    timezone: "Asia/Kolkata"
-  });
-  
-  console.log('📅 Admin notifications scheduled to run daily at 10:00 AM IST');
-};
 
 // Schedule interest rate upgrades to run daily at 11:00 AM
 const scheduleInterestRateUpgrades = () => {
@@ -128,8 +91,6 @@ const schedulePaymentReminders = () => {
 const initializeCronJobs = () => {
   console.log('🚀 Initializing cron jobs...');
   
-  scheduleGoldReturnReminders();
-  scheduleAdminNotifications();
   scheduleInterestRateUpgrades();
   schedulePaymentReminders();
   
@@ -151,8 +112,6 @@ const initializeCronJobs = () => {
 
 module.exports = {
   initializeCronJobs,
-  scheduleGoldReturnReminders,
-  scheduleAdminNotifications,
   scheduleInterestRateUpgrades,
   schedulePaymentReminders
 };

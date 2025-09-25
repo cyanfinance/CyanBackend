@@ -102,6 +102,11 @@ const loanSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'ItemPhoto'
     }],
+    // Reference to bank receipt photos
+    bankReceiptPhotos: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'ItemPhoto'
+    }],
     amount: {
         type: Number,
         required: [true, 'Please provide loan amount'],

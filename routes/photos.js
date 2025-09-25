@@ -80,7 +80,7 @@ router.post('/:loanId/photos', [
     adminAuth,
     upload.array('photos', 5), // Allow up to 5 photos
     [
-        body('goldItemIndex').isInt({ min: -1 }).withMessage('Valid gold item index is required (-1 for all items together)'),
+        body('goldItemIndex').isInt({ min: -2 }).withMessage('Valid gold item index is required (-2 for bank receipt, -1 for all items together)'),
         body('description').optional().isString().withMessage('Description must be a string'),
         body('tags').optional().isArray().withMessage('Tags must be an array')
     ]
@@ -105,8 +105,8 @@ router.post('/:loanId/photos', [
             return res.status(404).json({ message: 'Loan not found' });
         }
 
-        // Verify gold item index is valid (allow -1 for "all items together" photo)
-        if (goldItemIndex !== -1 && goldItemIndex >= loan.goldItems.length) {
+        // Verify gold item index is valid (allow -2 for bank receipt, -1 for "all items together" photo)
+        if (goldItemIndex !== -2 && goldItemIndex !== -1 && goldItemIndex >= loan.goldItems.length) {
             return res.status(400).json({ message: 'Invalid gold item index' });
         }
 
@@ -139,7 +139,13 @@ router.post('/:loanId/photos', [
                 await photo.save();
 
                 // Add photo reference to appropriate location
-                if (goldItemIndex === -1) {
+                if (goldItemIndex === -2) {
+                    // Add to bank receipt photos
+                    if (!loan.bankReceiptPhotos) {
+                        loan.bankReceiptPhotos = [];
+                    }
+                    loan.bankReceiptPhotos.push(photo._id);
+                } else if (goldItemIndex === -1) {
                     // Add to "all items together" photos
                     loan.allItemsTogetherPhotos.push(photo._id);
                 } else {
@@ -364,12 +370,24 @@ router.delete('/:loanId/photos/:photoId', [auth, adminAuth], async (req, res) =>
             return res.status(404).json({ message: 'Photo not found' });
         }
 
-        // Remove photo reference from gold item
+        // Remove photo reference from appropriate location
         const loan = await Loan.findById(loanId);
         if (loan) {
+            // Remove from gold items
             loan.goldItems.forEach(item => {
                 item.photos = item.photos.filter(pid => !pid.equals(photoId));
             });
+            
+            // Remove from all items together photos
+            if (loan.allItemsTogetherPhotos) {
+                loan.allItemsTogetherPhotos = loan.allItemsTogetherPhotos.filter(pid => !pid.equals(photoId));
+            }
+            
+            // Remove from bank receipt photos
+            if (loan.bankReceiptPhotos) {
+                loan.bankReceiptPhotos = loan.bankReceiptPhotos.filter(pid => !pid.equals(photoId));
+            }
+            
             await loan.save();
         }
 

@@ -3,7 +3,6 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const adminAuth = require('../middleware/adminAuth');
 const CronJobHistory = require('../models/CronJobHistory');
-const { processGoldReturnReminders } = require('../scripts/goldReturnManager');
 const { processInterestRateUpgrades } = require('../scripts/interestRateUpgradeManager');
 const { sendAllPaymentReminders } = require('../scripts/sendPaymentReminders');
 
@@ -63,8 +62,6 @@ router.post('/execute/:jobName', [auth, adminAuth], async (req, res) => {
         
         // Validate job name
         const validJobs = [
-            'gold_return_reminders',
-            'admin_notifications',
             'interest_rate_upgrades',
             'payment_reminders'
         ];
@@ -159,22 +156,6 @@ router.get('/list', [auth, adminAuth], async (req, res) => {
     try {
         const jobs = [
             {
-                name: 'gold_return_reminders',
-                displayName: 'Gold Return Reminders',
-                description: 'Send reminders to customers about returning gold items after loan closure',
-                schedule: 'Daily at 9:00 AM IST',
-                lastExecution: null,
-                status: 'unknown'
-            },
-            {
-                name: 'admin_notifications',
-                displayName: 'Admin Notifications',
-                description: 'Send notifications to admins about overdue gold returns',
-                schedule: 'Daily at 10:00 AM IST',
-                lastExecution: null,
-                status: 'unknown'
-            },
-            {
                 name: 'interest_rate_upgrades',
                 displayName: 'Interest Rate Upgrades',
                 description: 'Process automatic interest rate upgrades for eligible loans',
@@ -229,21 +210,6 @@ async function executeJobAsync(jobName, historyId) {
         console.log(`🔄 [MANUAL] Starting execution of job: ${jobName}`);
         
         switch (jobName) {
-            case 'gold_return_reminders':
-                const goldReturnResult = await processGoldReturnReminders();
-                recordsProcessed = goldReturnResult?.processed || 0;
-                recordsSuccessful = goldReturnResult?.successful || 0;
-                recordsFailed = goldReturnResult?.failed || 0;
-                break;
-                
-            case 'admin_notifications':
-                // Admin notifications are handled by gold return reminders
-                const adminResult = await processGoldReturnReminders();
-                recordsProcessed = adminResult?.processed || 0;
-                recordsSuccessful = adminResult?.successful || 0;
-                recordsFailed = adminResult?.failed || 0;
-                break;
-                
             case 'interest_rate_upgrades':
                 const upgradeResult = await processInterestRateUpgrades();
                 recordsProcessed = upgradeResult?.processed || 0;
