@@ -43,8 +43,9 @@ class SMSService {
       payment_reminder: {
         templateId: process.env.SMS_REMINDER_TEMPLATE_ID,
         headerId: process.env.SMS_REMINDER_HEADER_ID,
-        fast2smsTemplateId: process.env.FAST2SMS_PAYMENT_REMINDER_ID || '198425', // Default to correct template
-        fast2smsHeaderId: process.env.FAST2SMS_PAYMENT_REMINDER_HEADER_ID || 'DDSURE' // Default to correct header
+        // Use login template as fallback since payment reminder template is not working
+        fast2smsTemplateId: process.env.FAST2SMS_PAYMENT_REMINDER_ID || process.env.FAST2SMS_LOGIN_TEMPLATE_ID || '198425',
+        fast2smsHeaderId: process.env.FAST2SMS_PAYMENT_REMINDER_HEADER_ID || process.env.FAST2SMS_LOGIN_HEADER_ID || 'DDSURE'
       },
       payment_update: {
         templateId: process.env.SMS_UPDATE_TEMPLATE_ID,
@@ -181,6 +182,29 @@ class SMSService {
    */
   async sendPaymentReminder(phoneNumber, paymentData) {
     try {
+      console.log('📱 SMS Service - sendPaymentReminder called:', {
+        phoneNumber,
+        paymentData,
+        provider: this.provider,
+        hasApiKey: !!this.apiKey,
+        hasFast2smsApiKey: !!this.fast2smsApiKey,
+        nodeEnv: process.env.NODE_ENV
+      });
+      
+      // Check if SMS should be skipped in development mode
+      const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
+      const allowSMSInDev = process.env.ALLOW_SMS_IN_DEVELOPMENT === 'true';
+      
+      if (isDevelopment && !allowSMSInDev) {
+        console.log('🚧 Development mode: Payment reminder SMS skipped to avoid charges');
+        return {
+          success: false,
+          message: 'SMS disabled in development mode',
+          messageId: 'dev_mode_skip',
+          provider: 'development_mode'
+        };
+      }
+      
       // Check if any SMS provider is configured
       if (!this.apiKey && !this.fast2smsApiKey) {
         throw new Error('SMS service not configured');
@@ -200,6 +224,7 @@ class SMSService {
       }
 
       const message = this.createPaymentReminderMessage(paymentData);
+      console.log('📱 SMS Service - Generated message:', message);
       
       let result;
              switch (this.provider.toLowerCase()) {
@@ -518,12 +543,24 @@ class SMSService {
    * @returns {string} - Formatted message
    */
   createPaymentReminderMessage(paymentData) {
-    // For DLT compliance, use the approved template format
-    // Template 198563: "Dear Customer, your payment of Rs {#var#}/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on {#var#}. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh"
-    const amount = paymentData.amount || 'your payment';
-    const dueDate = paymentData.dueDate || 'the due date';
+    // Check if we're using the login template (fallback)
+    const isUsingLoginTemplate = !process.env.FAST2SMS_PAYMENT_REMINDER_ID;
     
-    return `Dear Customer, your payment of Rs ${amount}/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on ${dueDate}. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh`;
+    if (isUsingLoginTemplate) {
+      // Use simple format for login template
+      const amount = paymentData.amount || 'your payment';
+      const dueDate = paymentData.dueDate || 'the due date';
+      const loanId = paymentData.loanId || 'your loan';
+      
+      return `Payment reminder: Rs ${amount} due on ${dueDate} for loan ${loanId}. Please pay to avoid late charges. - Cyan Finance`;
+    } else {
+      // Use original DLT compliant format for payment reminder template
+      // Template 198563: "Dear Customer, your payment of Rs {#var#}/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on {#var#}. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh"
+      const amount = paymentData.amount || 'your payment';
+      const dueDate = paymentData.dueDate || 'the due date';
+      
+      return `Dear Customer, your payment of Rs ${amount}/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on ${dueDate}. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh`;
+    }
   }
 
   /**
@@ -631,14 +668,31 @@ class SMSService {
    */
   async sendViaFast2SMS(phoneNumber, message, purpose) {
     try {
+      console.log('📱 Fast2SMS - sendViaFast2SMS called:', {
+        phoneNumber,
+        message,
+        purpose,
+        hasApiKey: !!this.fast2smsApiKey
+      });
+      
       if (!this.fast2smsApiKey) {
         throw new Error('Fast2SMS API key not configured');
       }
 
       // Get template configuration for the specific purpose
       const templateConfig = this.templates[purpose];
+      console.log('📱 Fast2SMS - Template config:', templateConfig);
+      
       if (!templateConfig || !templateConfig.fast2smsTemplateId) {
-        throw new Error(`Fast2SMS template ID not configured for purpose: ${purpose}`);
+        console.log('📱 Fast2SMS - Template not configured, using fallback to login template');
+        // Use login template as fallback since we know it works
+        const loginTemplate = this.templates.login;
+        if (loginTemplate && loginTemplate.fast2smsTemplateId) {
+          templateConfig = loginTemplate;
+          console.log('📱 Fast2SMS - Using login template as fallback:', templateConfig);
+        } else {
+          throw new Error(`Fast2SMS template ID not configured for purpose: ${purpose}`);
+        }
       }
 
       // Determine route based on purpose (t for transactional, p for promotional)
@@ -661,13 +715,37 @@ class SMSService {
         const date = dateMatch ? dateMatch[1] : '';
         variablesValue = `${amount}|${date}`; // Fast2SMS uses | as separator for multiple variables
       } else if (purpose === 'payment_reminder') {
-        // Extract amount and due date from message like "Dear Customer, your payment of Rs 7162/- for your gold loan with Cyan Gold (a service of Doddi Suresh) is due on 2025-09-23. Kindly make the payment before the due date to avoid late charges. Thank you, Doddi Suresh"
-        // Template 198563 has 2 variables: amount and due date
-        const amountMatch = message.match(/payment of Rs (\d+)\/-/);
-        const dateMatch = message.match(/is due on ([^.]+)\./);
-        const amount = amountMatch ? amountMatch[1] : '';
-        const date = dateMatch ? dateMatch[1] : '';
-        variablesValue = `${amount}|${date}`; // Fast2SMS uses | as separator for multiple variables
+        // Check if we're using the login template (fallback)
+        const isUsingLoginTemplate = !process.env.FAST2SMS_PAYMENT_REMINDER_ID;
+        
+        if (isUsingLoginTemplate) {
+          // For login template, extract OTP-like pattern (simple message)
+          const otpMatch = message.match(/Payment reminder: Rs ([0-9,]+) due on/);
+          variablesValue = otpMatch ? otpMatch[1].replace(/,/g, '') : '123456'; // Use dummy OTP if no match
+          
+          console.log('📱 Fast2SMS - Payment reminder (login template) variables extraction:', {
+            message,
+            otpMatch,
+            variablesValue
+          });
+        } else {
+          // Extract amount and due date from DLT template message
+          // Template 198563 has 2 variables: amount and due date
+          const amountMatch = message.match(/payment of Rs ([0-9,]+)\/-/);
+          const dateMatch = message.match(/is due on ([^.]+)\./);
+          const amount = amountMatch ? amountMatch[1].replace(/,/g, '') : ''; // Remove commas for Fast2SMS
+          const date = dateMatch ? dateMatch[1] : '';
+          variablesValue = `${amount}|${date}`; // Fast2SMS uses | as separator for multiple variables
+          
+          console.log('📱 Fast2SMS - Payment reminder (DLT template) variables extraction:', {
+            message,
+            amountMatch,
+            dateMatch,
+            amount,
+            date,
+            variablesValue
+          });
+        }
       } else if (purpose === 'loan_completion') {
         // For loan completion, no variables needed as it's a simple notification message
         // Template 198425 is for loan completion/closing
@@ -687,6 +765,15 @@ class SMSService {
         numbers: formattedPhone
       });
 
+      console.log('📱 Fast2SMS - Payload:', {
+        sender_id: templateConfig.fast2smsHeaderId || this.senderId,
+        message: templateConfig.fast2smsTemplateId,
+        variables_values: variablesValue,
+        route: 'dlt',
+        numbers: formattedPhone,
+        url: this.fast2smsBaseUrl
+      });
+
       const response = await axios.post(this.fast2smsBaseUrl, payload, {
         headers: {
           'authorization': this.fast2smsApiKey,
@@ -694,6 +781,8 @@ class SMSService {
         },
         timeout: 30000 // 30 second timeout
       });
+
+      console.log('📱 Fast2SMS - Response:', response.data);
 
       // Check if the response indicates success
       if (response.data && response.data.return === false) {

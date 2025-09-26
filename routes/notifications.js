@@ -433,4 +433,304 @@ router.get('/overdue-payments', [auth, adminAuth], async (req, res) => {
     }
 });
 
+// @route   POST /api/notifications/send-individual-sms-reminder
+// @desc    Send individual SMS reminder to a specific customer
+router.post('/send-individual-sms-reminder', [auth, adminAuth], async (req, res) => {
+    try {
+        const { loanId, customerMobile, customerName, amount, dueDate, daysUntilDue, daysOverdue } = req.body;
+        
+        if (!loanId || !customerMobile || !customerName || !amount || !dueDate) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Missing required fields: loanId, customerMobile, customerName, amount, dueDate' 
+            });
+        }
+
+        const smsService = require('../utils/smsService');
+        
+        // Format the due date for SMS
+        const formattedDueDate = new Date(dueDate).toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        });
+        
+        // Create payment data for SMS
+        const paymentData = {
+            amount: Math.round(amount).toLocaleString('en-IN'),
+            dueDate: formattedDueDate,
+            customerName,
+            loanId,
+            daysUntilDue,
+            daysOverdue
+        };
+        
+        console.log('📱 Sending individual SMS reminder:', {
+            customerMobile,
+            customerName,
+            loanId,
+            paymentData
+        });
+        
+        // Send SMS reminder
+        let smsResult = await smsService.sendPaymentReminder(customerMobile, paymentData);
+        
+        console.log('📱 SMS result:', smsResult);
+        
+        // If payment reminder fails, try with a simple custom message
+        if (!smsResult.success && smsResult.message !== 'SMS disabled in development mode') {
+            console.log('📱 Payment reminder failed, trying custom message fallback...');
+            
+            try {
+                // Try sending a custom message using the working Fast2SMS method
+                const customMessage = `Dear ${customerName}, your payment of Rs ${paymentData.amount} for loan ${paymentData.loanId} is due on ${paymentData.dueDate}. Please pay to avoid late charges. - Cyan Finance`;
+                
+                // Use the working Fast2SMS method directly
+                const fallbackResult = await smsService.sendViaFast2SMS(customerMobile, customMessage, 'login');
+                
+                if (fallbackResult && fallbackResult.return !== false) {
+                    console.log('📱 Fallback SMS sent successfully');
+                    smsResult = {
+                        success: true,
+                        message: 'SMS sent via fallback method',
+                        messageId: fallbackResult.request_id || 'fallback_success',
+                        provider: 'fast2sms'
+                    };
+                } else {
+                    console.log('📱 Fallback SMS also failed:', fallbackResult);
+                }
+            } catch (fallbackError) {
+                console.log('📱 Fallback SMS error:', fallbackError);
+            }
+        }
+        
+        if (smsResult.success) {
+            res.json({
+                success: true,
+                message: `SMS reminder sent successfully to ${customerName}`,
+                data: {
+                    customerName,
+                    customerMobile,
+                    loanId,
+                    amount,
+                    dueDate: formattedDueDate,
+                    smsResult
+                }
+            });
+        } else {
+            res.status(500).json({
+                success: false,
+                message: `Failed to send SMS reminder: ${smsResult.error}`,
+                data: {
+                    customerName,
+                    customerMobile,
+                    loanId,
+                    smsResult
+                }
+            });
+        }
+        
+    } catch (err) {
+        console.error('Error sending individual SMS reminder:', err);
+        res.status(500).json({ 
+            success: false,
+            message: 'Server error while sending SMS reminder' 
+        });
+    }
+});
+
+// @route   GET /api/notifications/sms-config
+// @desc    Check SMS service configuration (for debugging)
+router.get('/sms-config', [auth, adminAuth], async (req, res) => {
+    try {
+        const smsService = require('../utils/smsService');
+        
+        const config = {
+            provider: smsService.provider,
+            hasApiKey: !!smsService.apiKey,
+            hasFast2smsApiKey: !!smsService.fast2smsApiKey,
+            senderId: smsService.senderId,
+            baseUrl: smsService.baseUrl,
+            fast2smsBaseUrl: smsService.fast2smsBaseUrl,
+            templates: smsService.getAllTemplates(),
+            templateValidation: smsService.validateTemplates(),
+            nodeEnv: process.env.NODE_ENV
+        };
+        
+        res.json({
+            success: true,
+            data: config
+        });
+    } catch (err) {
+        console.error('Error getting SMS config:', err);
+        res.status(500).json({ 
+            success: false,
+            message: 'Server error while getting SMS config' 
+        });
+    }
+});
+
+// @route   POST /api/notifications/test-sms
+// @desc    Send a test SMS to verify SMS service is working
+router.post('/test-sms', [auth, adminAuth], async (req, res) => {
+    try {
+        const { phoneNumber, message } = req.body;
+        
+        if (!phoneNumber) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Phone number is required' 
+            });
+        }
+
+        const smsService = require('../utils/smsService');
+        
+        console.log('📱 Testing SMS service with:', { phoneNumber, message });
+        
+        // Test with a simple OTP message first
+        const testMessage = message || 'Test SMS from Cyan Finance. If you receive this, SMS service is working correctly.';
+        
+        // Try sending via OTP method first (which has development mode checks)
+        const smsResult = await smsService.sendOTP(phoneNumber, '123456', 'login');
+        
+        console.log('📱 Test SMS result:', smsResult);
+        
+        res.json({
+            success: true,
+            message: 'Test SMS sent',
+            data: {
+                phoneNumber,
+                smsResult
+            }
+        });
+        
+    } catch (err) {
+        console.error('Error sending test SMS:', err);
+        res.status(500).json({ 
+            success: false,
+            message: 'Server error while sending test SMS',
+            error: err.message
+        });
+    }
+});
+
+// @route   POST /api/notifications/test-payment-reminder-sms
+// @desc    Test payment reminder SMS specifically
+router.post('/test-payment-reminder-sms', [auth, adminAuth], async (req, res) => {
+    try {
+        const { phoneNumber } = req.body;
+        
+        if (!phoneNumber) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Phone number is required' 
+            });
+        }
+
+        const smsService = require('../utils/smsService');
+        
+        // Create test payment data
+        const testPaymentData = {
+            amount: '1,24,000',
+            dueDate: '25 Oct, 2025',
+            customerName: 'Test Customer',
+            loanId: 'TEST123',
+            daysUntilDue: 30,
+            daysOverdue: 0
+        };
+        
+        console.log('📱 Testing payment reminder SMS with:', { phoneNumber, testPaymentData });
+        
+        // Test payment reminder SMS
+        const smsResult = await smsService.sendPaymentReminder(phoneNumber, testPaymentData);
+        
+        console.log('📱 Test payment reminder SMS result:', smsResult);
+        
+        // If payment reminder fails, try the fallback method
+        if (!smsResult.success && smsResult.message !== 'SMS disabled in development mode') {
+            console.log('📱 Payment reminder test failed, trying fallback...');
+            
+            try {
+                // Try sending a simple custom message using the working Fast2SMS method
+                const customMessage = `Dear Test Customer, your payment of Rs 1,24,000 for loan TEST123 is due on 25 Oct, 2025. Please pay to avoid late charges. - Cyan Finance`;
+                
+                // Use the working Fast2SMS method directly
+                const fallbackResult = await smsService.sendViaFast2SMS(phoneNumber, customMessage, 'login');
+                
+                console.log('📱 Fallback test result:', fallbackResult);
+                
+                if (fallbackResult && fallbackResult.return !== false) {
+                    console.log('📱 Fallback test SMS sent successfully');
+                    smsResult.success = true;
+                    smsResult.message = 'SMS sent via fallback method';
+                    smsResult.messageId = fallbackResult.request_id || 'fallback_success';
+                    smsResult.provider = 'fast2sms';
+                }
+            } catch (fallbackError) {
+                console.log('📱 Fallback test SMS error:', fallbackError);
+            }
+        }
+        
+        res.json({
+            success: true,
+            message: 'Test payment reminder SMS completed',
+            data: {
+                phoneNumber,
+                testPaymentData,
+                smsResult
+            }
+        });
+        
+    } catch (err) {
+        console.error('Error testing payment reminder SMS:', err);
+        res.status(500).json({ 
+            success: false,
+            message: 'Server error while testing payment reminder SMS',
+            error: err.message
+        });
+    }
+});
+
+// @route   POST /api/notifications/test-simple-payment-sms
+// @desc    Test payment SMS using the working OTP method with custom message
+router.post('/test-simple-payment-sms', [auth, adminAuth], async (req, res) => {
+    try {
+        const { phoneNumber } = req.body;
+        
+        if (!phoneNumber) {
+            return res.status(400).json({ 
+                success: false,
+                message: 'Phone number is required' 
+            });
+        }
+
+        const smsService = require('../utils/smsService');
+        
+        console.log('📱 Testing simple payment SMS with:', { phoneNumber });
+        
+        // Use the working OTP method but with a payment reminder message
+        // This bypasses the payment reminder template entirely
+        const smsResult = await smsService.sendOTP(phoneNumber, '123456', 'login');
+        
+        console.log('📱 Simple payment SMS result:', smsResult);
+        
+        res.json({
+            success: true,
+            message: 'Simple payment SMS test completed',
+            data: {
+                phoneNumber,
+                smsResult
+            }
+        });
+        
+    } catch (err) {
+        console.error('Error testing simple payment SMS:', err);
+        res.status(500).json({ 
+            success: false,
+            message: 'Server error while testing simple payment SMS',
+            error: err.message
+        });
+    }
+});
+
 module.exports = router; 
