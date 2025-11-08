@@ -8,6 +8,7 @@ const corsOptions = {
         const allowedOrigins = [
             'https://cyan-frontend.vercel.app',
             'https://cyangold.in',
+            'https://www.cyangold.in',
             'http://localhost:3000',
             'http://localhost:5173'
         ];
