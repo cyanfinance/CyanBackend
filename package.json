@@ -4,8 +4,8 @@
   "description": "Backend for Cyan Finance application",
   "main": "server.js",
   "engines": {
-    "node": ">=18.0.0"
-  },
+  "node": ">=18 <21"
+},
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
