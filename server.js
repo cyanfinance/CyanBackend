@@ -39,7 +39,27 @@ mongoose.connect(mongoUri, {
     useNewUrlParser: true,
     useUnifiedTopology: true
 })
-.then(() => console.log('Connected to MongoDB'))
+.then(async () => {
+    console.log('Connected to MongoDB');
+    
+    // Initialize Settings document if it doesn't exist
+    try {
+        const Settings = require('./models/Settings');
+        const existingSettings = await Settings.findOne();
+        if (!existingSettings) {
+            await Settings.create({
+                goldRate: 7000,
+                lastUpdated: new Date()
+            });
+            console.log('✅ Settings document initialized with default gold rate: ₹7000');
+        } else {
+            console.log(`✅ Settings document exists with gold rate: ₹${existingSettings.goldRate}`);
+        }
+    } catch (err) {
+        console.error('Error initializing Settings:', err);
+        // Don't fail server startup if Settings initialization fails
+    }
+})
 .catch(err => console.error('MongoDB connection error:', err));
 
 // Routes

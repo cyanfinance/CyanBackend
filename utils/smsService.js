@@ -102,12 +102,12 @@ class SMSService {
    */
   async sendOTP(phoneNumber, otp, purpose = 'verification') {
     try {
-      // Skip SMS in development mode to avoid charges, EXCEPT for loan creation
+      // Skip SMS in development mode to avoid charges, EXCEPT for loan creation and customer verification
       const isDevelopment = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
-      const isLoanCreation = purpose === 'loan_creation' || purpose === 'customer_registration';
+      const isLoanCreation = purpose === 'loan_creation' || purpose === 'customer_registration' || purpose === 'customer_verification';
       
       if (isDevelopment && !isLoanCreation) {
-        console.log('🚧 Development mode: SMS OTP skipped to avoid charges (except for loan creation)');
+        console.log('🚧 Development mode: SMS OTP skipped to avoid charges (except for loan creation and customer verification)');
         return {
           success: false,
           message: 'SMS disabled in development mode',
@@ -680,11 +680,11 @@ class SMSService {
       }
 
       // Get template configuration for the specific purpose
-      const templateConfig = this.templates[purpose];
-      console.log('📱 Fast2SMS - Template config:', templateConfig);
+      let templateConfig = this.templates[purpose];
+      console.log('📱 Fast2SMS - Template config for purpose:', purpose, templateConfig);
       
       if (!templateConfig || !templateConfig.fast2smsTemplateId) {
-        console.log('📱 Fast2SMS - Template not configured, using fallback to login template');
+        console.log('📱 Fast2SMS - Template not configured for purpose:', purpose, ', using fallback to login template');
         // Use login template as fallback since we know it works
         const loginTemplate = this.templates.login;
         if (loginTemplate && loginTemplate.fast2smsTemplateId) {

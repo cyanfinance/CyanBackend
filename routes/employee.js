@@ -134,7 +134,7 @@ router.post('/loans', [
     body('aadharNumber').matches(/^[0-9]{12}$/).withMessage('Aadhar number must be exactly 12 digits'),
     body('amount').isNumeric().withMessage('Loan amount must be a number').isFloat({ min: 100 }).withMessage('Loan amount must be at least 100'),
     body('term').isIn([3, 6, 12]).withMessage('Duration must be 3, 6, or 12 months'),
-    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
+    // body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('monthlyPayment').isNumeric().withMessage('Monthly payment is required'),
     body('totalPayment').isNumeric().withMessage('Total payment is required'),
     body('goldItems').isArray({ min: 1 }).withMessage('At least one gold item must be provided'),
@@ -211,29 +211,17 @@ router.post('/loans', [
             });
             isNewCustomer = true;
 
-            // Send welcome email to new customer
-            try {
-                await sendBrevoEmail({
-                    to: email,
-                    subject: 'Welcome to Cyan Finance',
-                    html: `
-                        <p>Dear ${name},</p>
-                        <p>Welcome to Cyan Finance! We're pleased to have you as our customer.</p>
-                        <p>Your account has been successfully created with the following details:</p>
-                        <ul>
-                            <li>Name: ${name}</li>
-                            <li>Email: ${email}</li>
-                            <li>Primary Mobile: ${primaryMobile}</li>
-                            ${secondaryMobile ? `<li>Secondary Mobile: ${secondaryMobile}</li>` : ''}
-                        </ul>
-                        <p>If you have any questions or need assistance, please don't hesitate to contact us.</p>
-                        <p>Best regards,<br/>Cyan Finance Team</p>
-                    `
-                });
-            } catch (emailErr) {
-                console.error('Failed to send welcome email:', emailErr);
-                // Continue with loan creation even if email fails
-            }
+        /* Messaging disabled temporarily (only OTPs allowed)
+        try {
+            await sendBrevoEmail({
+                to: email,
+                subject: 'Welcome to Cyan Finance',
+                html: `...`
+            });
+        } catch (emailErr) {
+            console.error('Failed to send welcome email:', emailErr);
+        }
+        */
         } else if (!customerId) {
             // Update existing customer's information (only if no customerId was provided)
             customer.name = name;
@@ -356,37 +344,17 @@ router.post('/loans', [
             console.log('Loan created successfully:', loan);
 
             // Send loan confirmation email
+            /* Messaging disabled temporarily (only OTPs allowed)
             try {
                 await sendBrevoEmail({
                     to: loan.email,
                     subject: 'Loan Confirmation - Cyan Finance',
-                    html: `
-                        <p>Dear ${loan.name},</p>
-                        <p>Your loan has been successfully created with the following details:</p>
-                        <p><b>Loan Details:</b></p>
-                        <ul>
-                            <li>Loan ID: ${loan.loanId}</li>
-                            <li>Loan Amount: ₹${loan.amount}</li>
-                            <li>Term: ${loan.term} months</li>
-                            <li>Interest Rate: ${loan.interestRate}%</li>
-                            <li>Monthly Payment: ₹${loan.monthlyPayment}</li>
-                            <li>Total Payment: ₹${loan.totalPayment}</li>
-                        </ul>
-                        <p><b>Gold Items:</b></p>
-                        <ul>
-                            ${loan.goldItems.map(item => `
-                                <li>${item.description} - Gross Weight: ${item.grossWeight}g, Net Weight: ${item.netWeight}g</li>
-                            `).join('')}
-                        </ul>
-                        <p>Please ensure timely payment of your monthly installments.</p>
-                        <p>If you have any questions, please don't hesitate to contact us.</p>
-                        <p>Best regards,<br/>Cyan Finance Team</p>
-                    `
+                    html: `...`
                 });
             } catch (emailErr) {
                 console.error('Failed to send loan confirmation email:', emailErr);
-                // Continue with response even if email fails
             }
+            */
 
             res.status(201).json({
                 success: true,
@@ -536,14 +504,17 @@ router.post('/customers', auth, async (req, res) => {
             const smsService = require('../utils/smsService');
             // Use customer_verification template for loan creation, login template for customer registration
             const templatePurpose = req.body.purpose === 'loan_creation' ? 'customer_verification' : 'login';
+            console.log(`[EMPLOYEE] Sending OTP to ${primaryMobile} with template: ${templatePurpose}, request purpose: ${req.body.purpose || 'not provided'}`);
             const smsResult = await smsService.sendOTP(primaryMobile, otp, templatePurpose);
             
+            console.log(`[EMPLOYEE] SMS OTP send result:`, JSON.stringify(smsResult, null, 2));
+            
             if (!smsResult.success) {
-                console.error('Failed to send SMS OTP:', smsResult.error);
-                return res.status(500).json({ errors: [{ msg: 'Failed to send SMS OTP. Please check the mobile number or try again later.' }] });
+                console.error('[EMPLOYEE] Failed to send SMS OTP:', smsResult.error || smsResult.message);
+                return res.status(500).json({ errors: [{ msg: `Failed to send SMS OTP: ${smsResult.error || smsResult.message || 'Unknown error'}. Please check the mobile number or try again later.` }] });
             }
             
-            console.log(`[EMPLOYEE] SMS OTP sent successfully to ${primaryMobile}`);
+            console.log(`[EMPLOYEE] SMS OTP sent successfully to ${primaryMobile}, messageId: ${smsResult.messageId}`);
         } catch (smsErr) {
             console.error('Failed to send SMS OTP:', smsErr);
             return res.status(500).json({ errors: [{ msg: 'Failed to send SMS OTP. Please check the mobile number or try again later.' }] });
@@ -789,7 +760,7 @@ router.get('/loans-with-upgrades', auth, async (req, res) => {
 // @access  Private (Employee only)
 router.post('/loans/:loanId/renew', [auth, [
     body('amount').isNumeric().withMessage('Amount must be a number'),
-    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
+    // body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months')
 ]], async (req, res) => {
     try {

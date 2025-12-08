@@ -121,7 +121,8 @@ const processInterestRateUpgrades = async () => {
                     upgradeDetails
                 );
                 
-                // Send email notification to customer
+                // Send email notification to customer (disabled)
+                /*
                 try {
                     const upgradeLevelText = upgradeDetails.upgradeLevel === 1 ? 'First' : 
                                            upgradeDetails.upgradeLevel === 2 ? 'Second' : 'Third';
@@ -174,8 +175,10 @@ const processInterestRateUpgrades = async () => {
                 } catch (emailError) {
                     console.error(`❌ Failed to send email to ${loan.email}:`, emailError.message);
                 }
+                */
                 
                 // Send SMS notification
+                /* Messaging disabled temporarily (only OTPs allowed)
                 try {
                     const smsMessage = `Dear ${loan.name}, your loan ${loan.loanId} interest rate has been upgraded from ${upgradeDetails.oldRate}% to ${upgradeDetails.newRate}% due to overdue payment. New total: ₹${upgradeDetails.newTotalPayment.toLocaleString()}. Please contact us immediately. - Cyan Finance`;
                     await sendSMS(loan.primaryMobile, smsMessage);
@@ -183,6 +186,7 @@ const processInterestRateUpgrades = async () => {
                 } catch (smsError) {
                     console.error(`❌ Failed to send SMS to ${loan.primaryMobile}:`, smsError.message);
                 }
+                */
                 
                 upgradedCount++;
                 

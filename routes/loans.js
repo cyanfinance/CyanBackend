@@ -28,7 +28,7 @@ router.post('/', [auth, [
     body('amount').isNumeric().withMessage('Amount must be a number'),
     body('purpose').notEmpty().withMessage('Purpose is required'),
     body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months'),
-    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
+    // body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('customerId').notEmpty().withMessage('customerId is required'),
     body('email').optional().isEmail().withMessage('Valid email is required')
 ]], async (req, res) => {
@@ -319,6 +319,7 @@ router.post('/:id/payment', [auth, [
 
         // Note: PDF receipt generation is now handled on the frontend
 
+        /* Messaging disabled temporarily (only OTPs allowed)
         // Send repayment email with PDF attachment
         try {
             const transporter = nodemailer.createTransport({
@@ -384,6 +385,7 @@ router.post('/:id/payment', [auth, [
         } catch (smsErr) {
             console.error('Failed to send payment update SMS:', smsErr);
         }
+        */
 
         // Send response with comprehensive details
         res.json({
@@ -448,6 +450,7 @@ router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
 
     // Note: PDF receipt generation is now handled on the frontend
 
+    /* Messaging disabled temporarily (only OTPs allowed)
     // Send repayment email with PDF attachment
     try {
       const transporter = nodemailer.createTransport({
@@ -503,6 +506,7 @@ router.patch('/:loanId/payments/:paymentId/approve', auth, async (req, res) => {
     } catch (smsErr) {
       console.error('Failed to send payment approval SMS:', smsErr);
     }
+    */
 
     res.json({ success: true, message: 'Payment approved and customer notified.' });
   } catch (err) {

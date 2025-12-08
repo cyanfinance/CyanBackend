@@ -59,7 +59,7 @@ router.post('/loans', [
     body('aadharNumber').matches(/^[0-9]{12}$/).withMessage('Aadhar number must be exactly 12 digits'),
     body('amount').isNumeric().withMessage('Loan amount must be a number').isFloat({ min: 100 }).withMessage('Loan amount must be at least 100'),
     body('term').isIn([3, 6, 12]).withMessage('Duration must be 3, 6, or 12 months'),
-    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30% or 36%'),
+    // body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30% or 36%'),
     body('monthlyPayment').isNumeric().withMessage('Monthly payment is required'),
     body('totalPayment').isNumeric().withMessage('Total payment is required'),
     body('goldItems').isArray({ min: 1 }).withMessage('At least one gold item must be provided'),
@@ -131,7 +131,7 @@ router.post('/loans', [
             });
             isNewCustomer = true;
 
-            // Send welcome email to new customer
+            /* Messaging disabled temporarily (only OTPs allowed)
             try {
                 await sendBrevoEmail({
                     to: email,
@@ -152,8 +152,8 @@ router.post('/loans', [
                 });
             } catch (emailErr) {
                 console.error('Failed to send welcome email:', emailErr);
-                // Continue with loan creation even if email fails
             }
+            */
         } else if (!customerId) {
             // Update existing customer's information (only if no customerId was provided)
             customer.name = name;
@@ -275,7 +275,7 @@ router.post('/loans', [
             const loan = await Loan.create(loanData);
             console.log('Loan created successfully:', loan);
 
-            // Send loan confirmation email (only if email is provided)
+            /* Messaging disabled temporarily (only OTPs allowed)
             if (loan.email && loan.email.trim()) {
                 try {
                     await sendBrevoEmail({
@@ -306,9 +306,9 @@ router.post('/loans', [
                     });
                 } catch (emailErr) {
                     console.error('Failed to send loan confirmation email:', emailErr);
-                    // Continue with response even if email fails
                 }
             }
+            */
 
             res.status(201).json({
                 success: true,
@@ -600,7 +600,7 @@ router.post('/employees', [auth, adminAuth, body('email').isEmail(), body('name'
       primaryMobile: mobile,
       secondaryMobile: alternateMobile
     });
-    // Send welcome email with OTP login instructions
+    /* Messaging disabled temporarily (only OTPs allowed)
     try {
       const roleTitle = userRole === 'admin' ? 'Admin' : 'Employee';
       await sendBrevoEmail({
@@ -615,8 +615,8 @@ router.post('/employees', [auth, adminAuth, body('email').isEmail(), body('name'
       });
     } catch (emailErr) {
       console.error(`Failed to send ${userRole} welcome email:`, emailErr);
-      // Continue even if email fails
     }
+    */
     
     const successMessage = userRole === 'admin' ? 'Admin registered and email sent.' : 'Employee registered and email sent.';
     res.json({ success: true, message: successMessage });
@@ -809,14 +809,17 @@ router.post('/customers', [
             const smsService = require('../utils/smsService');
             // Use customer_verification template for loan creation, login template for customer registration
             const templatePurpose = req.body.purpose === 'loan_creation' ? 'customer_verification' : 'login';
+            console.log(`[ADMIN] Sending OTP to ${primaryMobile} with template: ${templatePurpose}, request purpose: ${req.body.purpose || 'not provided'}`);
             const smsResult = await smsService.sendOTP(primaryMobile, otp, templatePurpose);
             
+            console.log(`[ADMIN] SMS OTP send result:`, JSON.stringify(smsResult, null, 2));
+            
             if (!smsResult.success) {
-                console.error('Failed to send SMS OTP:', smsResult.error);
-                return res.status(500).json({ errors: [{ msg: 'Failed to send SMS OTP. Please check the mobile number or try again later.' }] });
+                console.error('[ADMIN] Failed to send SMS OTP:', smsResult.error || smsResult.message);
+                return res.status(500).json({ errors: [{ msg: `Failed to send SMS OTP: ${smsResult.error || smsResult.message || 'Unknown error'}. Please check the mobile number or try again later.` }] });
             }
             
-            console.log(`[ADMIN] SMS OTP sent successfully to ${primaryMobile}`);
+            console.log(`[ADMIN] SMS OTP sent successfully to ${primaryMobile}, messageId: ${smsResult.messageId}`);
         } catch (smsErr) {
             console.error('Failed to send SMS OTP:', smsErr);
             return res.status(500).json({ errors: [{ msg: 'Failed to send SMS OTP. Please check the mobile number or try again later.' }] });
@@ -1059,48 +1062,20 @@ router.post('/loans/:loanId/mark-ready-for-auction-36-percent', [auth, adminAuth
         // Create notification
         await Notification.createAuctionWarningNotification(loan, {});
         
-        // Send email notification to customer
+        /* Messaging disabled temporarily (only OTPs allowed)
         try {
             await sendBrevoEmail({
                 to: loan.email,
                 subject: 'URGENT: Final Interest Rate Reached - Loan Ready for Auction',
-                html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #dc2626;">⚠️ URGENT: Final Interest Rate Reached - Loan Ready for Auction</h2>
-                        <p>Dear ${loan.name},</p>
-                        <p>We are writing to inform you that your loan has reached the final interest rate (36%) and is now ready for auction due to non-payment.</p>
-                        
-                        <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                            <h3 style="color: #dc2626; margin-top: 0;">Loan Details:</h3>
-                            <p><strong>Loan ID:</strong> ${loan.loanId}</p>
-                            <p><strong>Current Interest Rate:</strong> 36% (Final Level)</p>
-                            <p><strong>Outstanding Amount:</strong> ₹${loan.remainingBalance.toLocaleString()}</p>
-                            <p><strong>Date Marked for Auction:</strong> ${new Date().toDateString()}</p>
-                        </div>
-                        
-                        <div style="background-color: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                            <p style="margin: 0; color: #92400e;"><strong>⚠️ URGENT ACTION REQUIRED:</strong> Your loan has reached the maximum interest rate (36%) and is now ready for auction. Please pay the full outstanding amount immediately to avoid auction of your gold items.</p>
-                        </div>
-                        
-                        <p>To avoid auction, please:</p>
-                        <ul>
-                            <li>Visit our office immediately with full payment</li>
-                            <li>Contact us at +91-9700049444</li>
-                            <li>Email us at support@cyanfinance.in</li>
-                        </ul>
-                        
-                        <p>If you have any questions, please contact us immediately.</p>
-                        
-                        <p>Best regards,<br/>Cyan Finance Team</p>
-                    </div>
-                `
+                html: `...`
             });
             console.log(`📧 36% auction warning email sent to ${loan.email}`);
         } catch (emailError) {
             console.error(`❌ Failed to send 36% auction email to ${loan.email}:`, emailError.message);
         }
+        */
         
-        // Send SMS notification
+        /* Messaging disabled temporarily (only OTPs allowed)
         try {
             const smsMessage = `URGENT: Loan ${loan.loanId} reached 36% interest rate and marked for auction. Outstanding: ₹${loan.remainingBalance.toLocaleString()}. Pay immediately to avoid auction. Contact: +91-9700049444 - Cyan Finance`;
             await sendSMS(loan.primaryMobile, smsMessage);
@@ -1108,6 +1083,7 @@ router.post('/loans/:loanId/mark-ready-for-auction-36-percent', [auth, adminAuth
         } catch (smsError) {
             console.error(`❌ Failed to send 36% auction SMS to ${loan.primaryMobile}:`, smsError.message);
         }
+        */
         
         res.json({
             success: true,
@@ -1149,52 +1125,20 @@ router.post('/loans/:loanId/mark-ready-for-auction', [auth, adminAuth], async (r
         // Create system notification
         await Notification.createAuctionWarningNotification(loan, {});
         
-        // Send email notification to customer
+        /* Messaging disabled temporarily (only OTPs allowed)
         try {
             await sendBrevoEmail({
                 to: loan.email,
                 subject: 'URGENT: Loan Ready for Auction - Immediate Payment Required',
-                html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #dc2626;">⚠️ URGENT: Loan Ready for Auction</h2>
-                        <p>Dear ${loan.name},</p>
-                        <p>We are writing to inform you that due to non-payment of your loan, we are preparing for auction of your gold items.</p>
-                        
-                        <div style="background-color: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #dc2626;">
-                            <h3 style="color: #dc2626; margin-top: 0;">Loan Details:</h3>
-                            <p><strong>Loan ID:</strong> ${loan.loanId}</p>
-                            <p><strong>Outstanding Amount:</strong> ₹${loan.remainingBalance.toLocaleString()}</p>
-                            <p><strong>Total Gold Weight:</strong> ${loan.goldItems ? loan.goldItems.reduce((total, item) => total + (item.netWeight || 0), 0) : 0} grams</p>
-                            <p><strong>Date Marked for Auction:</strong> ${new Date().toDateString()}</p>
-                        </div>
-                        
-                        <div style="background-color: #fef3c7; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                            <p style="margin: 0; color: #92400e;"><strong>⚠️ URGENT ACTION REQUIRED:</strong> Please pay the full outstanding amount immediately to avoid auction of your gold items.</p>
-                        </div>
-                        
-                        <p>To avoid auction, please:</p>
-                        <ul>
-                            <li>Visit our office immediately</li>
-                            <li>Pay the full outstanding amount</li>
-                            <li>Contact us to discuss payment options</li>
-                        </ul>
-                        
-                        <p>If you have any questions or need to discuss payment arrangements, please contact us immediately:</p>
-                        <ul>
-                            <li>Phone: +91-9700049444</li>
-                            <li>Email: support@cyanfinance.in</li>
-                        </ul>
-                        
-                        <p>Best regards,<br/>Cyan Finance Team</p>
-                    </div>
-                `
+                html: `...`
             });
             console.log(`📧 Auction warning email sent to ${loan.email}`);
         } catch (emailError) {
             console.error(`❌ Failed to send auction email to ${loan.email}:`, emailError.message);
         }
+        */
         
-        // Send SMS notification
+        /* Messaging disabled temporarily (only OTPs allowed)
         try {
             const smsMessage = `URGENT: Loan ${loan.loanId} marked for auction due to non-payment. Outstanding: ₹${loan.remainingBalance.toLocaleString()}. Pay immediately to avoid auction. Contact: +91-9700049444 - Cyan Finance`;
             await sendSMS(loan.primaryMobile, smsMessage);
@@ -1202,6 +1146,7 @@ router.post('/loans/:loanId/mark-ready-for-auction', [auth, adminAuth], async (r
         } catch (smsError) {
             console.error(`❌ Failed to send auction SMS to ${loan.primaryMobile}:`, smsError.message);
         }
+        */
         
         res.json({
             success: true,
@@ -1645,7 +1590,7 @@ router.get('/upgrade-statistics', [auth, adminAuth], async (req, res) => {
 // @access  Private (Admin only)
 router.post('/loans/:loanId/renew', [auth, adminAuth, [
     body('amount').isNumeric().withMessage('Amount must be a number'),
-    body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
+    // body('interestRate').isIn([18, 24, 30, 36]).withMessage('Interest rate must be 18%, 24%, 30%, or 36%'),
     body('term').isIn([3, 6, 12]).withMessage('Term must be 3, 6, or 12 months')
 ]], async (req, res) => {
     try {

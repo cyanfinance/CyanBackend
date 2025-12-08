@@ -496,34 +496,35 @@ loanSchema.methods.recordPayment = async function(paymentAmount, paymentMethod, 
 
     await this.save();
     
-    // Create notifications
-    try {
-        // Create payment notification
-        await Notification.createRepaymentNotification(this, paymentAmount);
-        
-        // Create loan closed notification if loan was just closed
-        if (wasActive && this.status === 'closed') {
-            await Notification.createLoanClosedNotification(this);
+        /* Messaging disabled temporarily (only OTPs allowed)
+        try {
+            // Create payment notification
+            await Notification.createRepaymentNotification(this, paymentAmount);
             
-            // Send loan completion SMS
-            try {
-                const smsService = require('../utils/smsService');
-                if (this.primaryMobile) {
-                    const loanData = {
-                        customerName: this.name,
-                        loanId: this.loanId
-                    };
-                    
-                    const smsResult = await smsService.sendLoanCompletion(this.primaryMobile, loanData);
-                    console.log('Loan completion SMS result:', smsResult);
+            // Create loan closed notification if loan was just closed
+            if (wasActive && this.status === 'closed') {
+                await Notification.createLoanClosedNotification(this);
+                
+                // Send loan completion SMS
+                try {
+                    const smsService = require('../utils/smsService');
+                    if (this.primaryMobile) {
+                        const loanData = {
+                            customerName: this.name,
+                            loanId: this.loanId
+                        };
+                        
+                        const smsResult = await smsService.sendLoanCompletion(this.primaryMobile, loanData);
+                        console.log('Loan completion SMS result:', smsResult);
+                    }
+                } catch (smsError) {
+                    console.error('Failed to send loan completion SMS:', smsError);
                 }
-            } catch (smsError) {
-                console.error('Failed to send loan completion SMS:', smsError);
             }
+        } catch (error) {
+            console.error('Error creating payment notifications:', error);
         }
-    } catch (error) {
-        console.error('Error creating payment notifications:', error);
-    }
+        */
     
     return payment;
 };

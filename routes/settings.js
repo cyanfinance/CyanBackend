@@ -9,11 +9,30 @@ const Settings = require('../models/Settings');
 // @access  Public
 router.get('/gold-rate', async (req, res) => {
   try {
-    const settings = await Settings.findOne();
-    res.json({ rate: settings ? settings.goldRate : 7000 });
+    // First try to find existing Settings document
+    let settings = await Settings.findOne();
+    
+    // If no Settings document exists, create one with default value
+    if (!settings) {
+      console.log('No Settings document found, creating default Settings...');
+      settings = await Settings.create({
+        goldRate: 7000,
+        lastUpdated: new Date()
+      });
+      console.log('✅ Created default Settings document with gold rate: ₹7000');
+    }
+    
+    res.json({ 
+      rate: settings.goldRate || 7000,
+      lastUpdated: settings.lastUpdated || new Date()
+    });
   } catch (error) {
     console.error('Error fetching gold rate:', error);
-    res.status(500).json({ message: 'Server error' });
+    // Return default value if there's an error
+    res.json({ 
+      rate: 7000,
+      lastUpdated: new Date()
+    });
   }
 });
 
@@ -28,21 +47,26 @@ router.post('/update-gold-rate', auth, adminAuth, async (req, res) => {
       return res.status(400).json({ message: 'Invalid gold rate' });
     }
 
-    let settings = await Settings.findOne();
-    
-    if (settings) {
-      settings.goldRate = rate;
-      settings.lastUpdated = Date.now();
-      await settings.save();
-    } else {
-      settings = new Settings({
+    // Use findOneAndUpdate with upsert to ensure Settings document always exists
+    const settings = await Settings.findOneAndUpdate(
+      {}, // Empty filter to find any document
+      { 
         goldRate: rate,
-        lastUpdated: Date.now()
-      });
-      await settings.save();
-    }
+        lastUpdated: new Date()
+      },
+      { 
+        upsert: true, // Create if doesn't exist
+        new: true, // Return the updated document
+        setDefaultsOnInsert: true // Apply defaults when creating
+      }
+    );
 
-    res.json({ message: 'Gold rate updated successfully', rate });
+    console.log(`Gold rate updated to ₹${rate} per gram at ${settings.lastUpdated}`);
+    res.json({ 
+      message: 'Gold rate updated successfully', 
+      rate: settings.goldRate,
+      lastUpdated: settings.lastUpdated
+    });
   } catch (error) {
     console.error('Error updating gold rate:', error);
     res.status(500).json({ message: 'Server error' });
