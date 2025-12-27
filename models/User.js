@@ -81,7 +81,7 @@ userSchema.pre('save', async function(next) {
 // Sign JWT and return
 userSchema.methods.getSignedJwtToken = function() {
     const jwtSecret = process.env.JWT_SECRET || 'fallback-secret-key-change-in-production';
-    const jwtExpire = process.env.JWT_EXPIRE || '7d';
+    const jwtExpire = process.env.JWT_EXPIRE || '24h';
     return jwt.sign({ 
         id: this._id,
         role: this.role 
