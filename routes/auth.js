@@ -472,7 +472,7 @@ router.post('/verify-otp', [
       token = jwt.sign(
         { id: user._id, email: user.email, role: 'customer' },
         jwtSecret,
-        { expiresIn: '7d' }
+        { expiresIn: '24h' }
       );
     } else {
       token = user.getSignedJwtToken();
